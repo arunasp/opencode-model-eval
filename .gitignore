@@ -1,0 +1,18 @@
+# Credentials — extracted by scripts/extract-opencode-key.sh, host-local only
+auth-data/
+
+# Generated results — artifacts of a run, not source
+results/*
+!results/.gitkeep
+
+# Terraform local state and caches — .terraform.lock.hcl IS committed
+# (see docs/VERSIONING.md); everything else here is machine-local
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/crash.log
+
+# OS/editor cruft
+.DS_Store
+*.swp

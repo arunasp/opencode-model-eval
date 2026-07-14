@@ -1,0 +1,85 @@
+name: opencode-model-eval
+
+x-model-defaults: &model-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+      # Pin this to a resolved digest (OPENCODE_REF=sha256:<digest>) once
+      # you've verified it against your own `docker inspect` output — see
+      # README for why "latest" is only a placeholder default.
+      OPENCODE_REF: ${OPENCODE_REF:-latest}
+  volumes:
+    - ./task-suite/prompts:/task-suite/prompts:ro
+    # Scoped to one provider key via scripts/extract-opencode-key.sh —
+    # narrower than mounting your real, multi-provider auth.json wholesale.
+    - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+  # No network egress restriction is applied here at the compose level —
+  # each provider's API host still needs outbound access. Add a network
+  # policy at the host/firewall layer if you want per-model egress scoping.
+
+services:
+  hy3:
+    <<: *model-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+        MODEL_PROVIDER: opencode-zen
+        MODEL_ID: hy3
+    volumes:
+      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results/hy3:/results
+
+  deepseek-v4-pro:
+    <<: *model-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+        MODEL_PROVIDER: deepseek
+        MODEL_ID: deepseek-v4-pro
+    volumes:
+      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results/deepseek-v4-pro:/results
+
+  glm-5-2:
+    <<: *model-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+        MODEL_PROVIDER: zhipu
+        MODEL_ID: glm-5.2
+    volumes:
+      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results/glm-5-2:/results
+
+  gemma4-31b-local:
+    <<: *model-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+        MODEL_PROVIDER: ollama
+        MODEL_ID: gemma4:31b
+    volumes:
+      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results/gemma4-31b-local:/results
+    # Requires Ollama reachable from inside the container — either run
+    # Ollama on the host with the container on the host network, or point
+    # this at a networked Ollama instance. Not resolved by this file.
+    network_mode: host

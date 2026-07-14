@@ -1,0 +1,7 @@
+auth-data/
+results/
+.git/
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.md
