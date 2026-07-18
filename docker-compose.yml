@@ -11,7 +11,7 @@ x-model-defaults: &model-defaults
       # README for why "latest" is only a placeholder default.
       OPENCODE_REF: ${OPENCODE_REF:-latest}
   volumes:
-    - ./task-suite/prompts:/task-suite/prompts:ro
+    - ./task-suite:/task-suite:ro
     # Scoped to one provider key via scripts/extract-opencode-key.sh —
     # narrower than mounting your real, multi-provider auth.json wholesale.
     - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
@@ -75,7 +75,7 @@ services:
         MODEL_PROVIDER: opencode
         MODEL_ID: hy3-free
     volumes:
-      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results/hy3:/results
 
@@ -90,7 +90,7 @@ services:
         MODEL_PROVIDER: deepseek
         MODEL_ID: deepseek-v4-pro
     volumes:
-      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results/deepseek-v4-pro:/results
 
@@ -105,7 +105,7 @@ services:
         MODEL_PROVIDER: zhipu
         MODEL_ID: glm-5.2
     volumes:
-      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results/glm-5-2:/results
 
@@ -120,7 +120,7 @@ services:
         MODEL_PROVIDER: ollama
         MODEL_ID: gemma4:31b
     volumes:
-      - ./task-suite/prompts:/task-suite/prompts:ro
+      - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results/gemma4-31b-local:/results
     # Requires Ollama reachable from inside the container — either run
