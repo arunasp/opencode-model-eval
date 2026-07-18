@@ -28,8 +28,8 @@ services:
       args:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
-        MODEL_PROVIDER: opencode-zen
-        MODEL_ID: hy3
+        MODEL_PROVIDER: opencode
+        MODEL_ID: hy3-free
     volumes:
       - ./task-suite/prompts:/task-suite/prompts:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
