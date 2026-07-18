@@ -20,6 +20,50 @@ x-model-defaults: &model-defaults
   # policy at the host/firewall layer if you want per-model egress scoping.
 
 services:
+  # Resolves a model before you know which one you want, using the
+  # shared harness layer directly (no MODEL_PROVIDER/MODEL_ID baked in --
+  # that's the whole point, this runs before that's decided). Writes
+  # results/discovered-model.env; feed it into a subsequent run via
+  # `docker compose run --env-file results/discovered-model.env adhoc`
+  # or read it manually and pass values to the `adhoc` service below.
+  #
+  # For a specific model rather than auto-discovery, use --model
+  # directly: `docker compose run discover python3
+  # /usr/local/bin/discover_and_select_model.py --model zhipu/glm-5.2`
+  discover:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: harness
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+    entrypoint: ["python3", "/usr/local/bin/discover_and_select_model.py"]
+    volumes:
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results:/results
+
+  # Runs the eval suite against whatever OPENCODE_MODEL_PROVIDER/
+  # OPENCODE_MODEL_ID are set at `docker compose run` time -- e.g. the
+  # output of the `discover` service above, or any provider/model you
+  # want to test ad-hoc without adding a new named service and rebuilding
+  # a model-specific image layer for it.
+  adhoc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: harness
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+    environment:
+      OPENCODE_MODEL_PROVIDER: ${OPENCODE_MODEL_PROVIDER:?set this, e.g. from discover's output}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:?set this, e.g. from discover's output}
+    volumes:
+      - ./task-suite:/task-suite:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results/adhoc:/results
+
   hy3:
     <<: *model-defaults
     build:

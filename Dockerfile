@@ -29,9 +29,9 @@ USER root
 # Debian Trixie and Alpine variants per anomalyco/opencode#19474) — detect
 # the package manager rather than assume one.
 RUN if command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache jq ca-certificates; \
+      apk add --no-cache jq ca-certificates python3; \
     elif command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && apt-get install -y --no-install-recommends jq ca-certificates \
+      apt-get update && apt-get install -y --no-install-recommends jq ca-certificates python3 \
       && rm -rf /var/lib/apt/lists/*; \
     else \
       echo "FATAL: no supported package manager (apk/apt-get) found in base image" >&2; \
@@ -51,6 +51,7 @@ RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-su
 # multi-tenant service. Tighten this if you run it anywhere less trusted.
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=0755 scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
 COPY --chmod=0644 config/opencode.base.json /opt/harness/opencode.base.json
 
 ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json

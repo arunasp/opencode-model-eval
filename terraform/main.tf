@@ -44,8 +44,8 @@ resource "docker_container" "model" {
   rm       = false # keep the stopped container inspectable: `docker logs`, exit code
 
   volumes {
-    host_path      = abspath("${var.harness_root}/task-suite/prompts")
-    container_path = "/task-suite/prompts"
+    host_path      = abspath("${var.harness_root}/task-suite")
+    container_path = "/task-suite"
     read_only      = true
   }
 
@@ -57,6 +57,61 @@ resource "docker_container" "model" {
 
   volumes {
     host_path      = abspath("${var.harness_root}/results/${each.key}")
+    container_path = "/results"
+    read_only      = false
+  }
+}
+
+# --- Model discovery -----------------------------------------------------
+# Honest limitation, not smoothed over: Terraform's plan/apply model
+# doesn't fit "run this, read its stdout, use it as input" within a
+# single apply the way docker-compose's discover -> adhoc chain does.
+# This resource runs discovery and lets you read the result out of
+# results/discovered/discovered-model.env afterward -- it's a two-phase
+# workflow (apply once to discover, then add the resolved provider/id to
+# var.models and apply again), not a single-command pipeline. For a
+# smoother discovery-to-run flow, use `docker compose run discover` then
+# `docker compose run --env-file results/discovered-model.env adhoc`
+# instead.
+resource "docker_image" "discover" {
+  name = "opencode-model-eval-discover:latest"
+
+  build {
+    context    = var.harness_root
+    dockerfile = "Dockerfile"
+    target     = "harness"
+    build_args = {
+      OPENCODE_IMAGE = var.opencode_image
+      OPENCODE_REF   = var.opencode_ref
+    }
+  }
+
+  triggers = {
+    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
+    discover_sha1   = filesha1("${var.harness_root}/scripts/discover_and_select_model.py")
+  }
+}
+
+resource "docker_container" "discover" {
+  name  = "opencode-model-eval-discover"
+  image = docker_image.discover.image_id
+
+  entrypoint = ["python3", "/usr/local/bin/discover_and_select_model.py"]
+  # To select a specific model instead of running discovery, override
+  # with: command = ["--model", "zhipu/glm-5.2"]
+
+  must_run = false
+  attach   = false
+  rm       = false
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/auth-data/auth.json")
+    container_path = "/home/harness/.local/share/opencode/auth.json"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/results/discovered")
     container_path = "/results"
     read_only      = false
   }
@@ -102,8 +157,8 @@ resource "docker_container" "gemma4_local" {
   # by this config — same caveat as docker-compose.yml.
 
   volumes {
-    host_path      = abspath("${var.harness_root}/task-suite/prompts")
-    container_path = "/task-suite/prompts"
+    host_path      = abspath("${var.harness_root}/task-suite")
+    container_path = "/task-suite"
     read_only      = true
   }
 
