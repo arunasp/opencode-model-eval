@@ -18,11 +18,12 @@ resource "docker_image" "model" {
   # only shows a rebuild diff when something that actually matters
   # changed. Same approach as ctx-squid-test-harness's main.tf.
   triggers = {
-    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1 = filesha1("${var.harness_root}/entrypoint.sh")
-    config_sha1     = filesha1("${var.harness_root}/config/opencode.base.json")
-    model_provider  = each.value.provider
-    model_id        = each.value.id
+    dockerfile_sha1        = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1        = filesha1("${var.harness_root}/entrypoint.sh")
+    run_test_ladder_sha1   = filesha1("${var.harness_root}/scripts/run_test_ladder.py")
+    config_sha1            = filesha1("${var.harness_root}/config/opencode.base.json")
+    model_provider          = each.value.provider
+    model_id                = each.value.id
   }
 }
 
@@ -138,9 +139,10 @@ resource "docker_image" "gemma4_local" {
   }
 
   triggers = {
-    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1 = filesha1("${var.harness_root}/entrypoint.sh")
-    config_sha1     = filesha1("${var.harness_root}/config/opencode.base.json")
+    dockerfile_sha1      = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1      = filesha1("${var.harness_root}/entrypoint.sh")
+    run_test_ladder_sha1 = filesha1("${var.harness_root}/scripts/run_test_ladder.py")
+    config_sha1          = filesha1("${var.harness_root}/config/opencode.base.json")
   }
 }
 
