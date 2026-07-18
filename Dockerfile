@@ -17,10 +17,13 @@ ARG OPENCODE_REF=latest
 FROM ${OPENCODE_IMAGE}:${OPENCODE_REF} AS base
 
 # --- Stage: harness ------------------------------------------------------
-# Shared test-harness layer, identical across every model under test.
-# Adds only: jq (for JSON result post-processing), the entrypoint script,
-# and a base opencode.json template. No model identity here — that's the
-# whole point of keeping this layer common and cacheable.
+# Single final stage now -- no more per-model layer. Model selection was
+# moved from a Docker build arg to an HTTP request parameter once
+# `opencode serve`'s API was confirmed to accept providerID/modelID per
+# request (server/routes/instance/httpapi/handlers/session.ts,
+# session/prompt.ts's ModelRef schema). See docs/CODEGEN.md's Docker
+# section for why this isn't a violation of "don't collapse stages for
+# convenience" -- there's no per-model build left to cache against.
 FROM base AS harness
 
 USER root
@@ -32,8 +35,9 @@ USER root
 # python3-pip and git added for the CVV scoring layer (cvv_scan.py,
 # axiom_cvv_verify.py) and its optional negation-detection/semantic-
 # fallback dependencies (spaCy + model, onnxruntime + tokenizers). This
-# makes the harness layer meaningfully heavier than before -- disclosed
-# here rather than left for someone to discover via a slow build.
+# makes the harness layer meaningfully heavier than a bare opencode
+# wrapper would be -- disclosed here rather than left for someone to
+# discover via a slow build.
 RUN if command -v apk >/dev/null 2>&1; then \
       apk add --no-cache jq ca-certificates python3 py3-pip git; \
     elif command -v apt-get >/dev/null 2>&1; then \
@@ -61,7 +65,7 @@ RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-su
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=0755 scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
-COPY --chmod=0755 scripts/run_test_ladder.py /usr/local/bin/run_test_ladder.py
+COPY --chmod=0755 scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
 COPY --chmod=0644 scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
 COPY --chmod=0644 scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
 COPY --chmod=0644 config/opencode.base.json /opt/harness/opencode.base.json
@@ -77,25 +81,12 @@ ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 
 ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json
 WORKDIR /workspace
+
+# 4096 is this project's own chosen fixed port -- NOT opencode's default.
+# Confirmed from source (cli/network.ts): real defaults are port=0
+# (random) and hostname=127.0.0.1 (loopback only, unreachable from
+# another container). Both explicitly overridden here so the client
+# service (see docker-compose.yml) can reach this one predictably.
+EXPOSE 4096
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-
-# --- Stage: model (built once per model under test) ---------------------
-# Thin layer on top of the shared, cached harness. Carries only the model
-# identity as build args/env/labels — no files change here, so this layer
-# is nearly free to rebuild per model and keeps a provenance record
-# (`docker inspect` on the resulting image shows exactly which model it
-# was built for) alongside the immutable base and shared harness below it.
-FROM harness AS model
-
-ARG MODEL_PROVIDER
-ARG MODEL_ID
-
-RUN test -n "${MODEL_PROVIDER}" || (echo "FATAL: MODEL_PROVIDER build-arg is required" >&2 && exit 1)
-RUN test -n "${MODEL_ID}" || (echo "FATAL: MODEL_ID build-arg is required" >&2 && exit 1)
-
-ENV OPENCODE_MODEL_PROVIDER=${MODEL_PROVIDER} \
-    OPENCODE_MODEL_ID=${MODEL_ID}
-
-LABEL eval.model.provider="${MODEL_PROVIDER}" \
-      eval.model.id="${MODEL_ID}" \
-      eval.harness.version="1"
+CMD ["serve"]

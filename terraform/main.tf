@@ -1,7 +1,19 @@
-resource "docker_image" "model" {
-  for_each = var.models
+# --- Shared network --------------------------------------------------
+# Raw docker_container resources (unlike Compose) don't get an implicit
+# shared network with by-name DNS resolution -- create one explicitly so
+# the eval container can reach the server container as "server:4096",
+# matching docker-compose.yml's default OPENCODE_SERVER_URL.
+resource "docker_network" "eval_net" {
+  name = "opencode-model-eval-net"
+}
 
-  name = "opencode-model-eval-${each.key}:latest"
+# --- Server image + container -----------------------------------------
+# Single, static image now -- no per-model build. Model selection moved
+# from a Docker build arg to an HTTP request parameter once opencode
+# serve's API was confirmed to accept providerID/modelID per request.
+# See docs/CODEGEN.md's Docker section and README for the full reasoning.
+resource "docker_image" "harness" {
+  name = "opencode-model-eval-harness:latest"
 
   build {
     context    = var.harness_root
@@ -9,45 +21,37 @@ resource "docker_image" "model" {
     build_args = {
       OPENCODE_IMAGE = var.opencode_image
       OPENCODE_REF   = var.opencode_ref
-      MODEL_PROVIDER = each.value.provider
-      MODEL_ID       = each.value.id
     }
   }
 
-  # Content-hashed rebuild triggers, not just "ran apply again" — plan
-  # only shows a rebuild diff when something that actually matters
-  # changed. Same approach as ctx-squid-test-harness's main.tf.
   triggers = {
     dockerfile_sha1        = filesha1("${var.harness_root}/Dockerfile")
     entrypoint_sha1        = filesha1("${var.harness_root}/entrypoint.sh")
-    run_test_ladder_sha1   = filesha1("${var.harness_root}/scripts/run_test_ladder.py")
+    run_eval_client_sha1   = filesha1("${var.harness_root}/scripts/run_eval_client.py")
     config_sha1            = filesha1("${var.harness_root}/config/opencode.base.json")
-    model_provider          = each.value.provider
-    model_id                = each.value.id
   }
 }
 
-resource "docker_container" "model" {
-  for_each = var.models
+resource "docker_container" "server" {
+  name  = "opencode-model-eval-server"
+  image = docker_image.harness.image_id
+  command = ["serve"]
 
-  name  = "opencode-model-eval-${each.key}"
-  image = docker_image.model[each.key].image_id
-
-  # This is a batch job, not a persistent service: entrypoint.sh runs the
-  # fixed task suite once and exits. must_run = false so a completed
-  # (stopped) container isn't treated as configuration drift on the next
-  # plan. Unlike ctx-squid-test-harness's interactive TESTPLAN.md case,
-  # there's no "sleep infinity" idle container to exec into here — the
-  # container's own exit code and the results/ volume are the actual
-  # signal.
-  must_run = false
+  # This IS a persistent service now, unlike the old per-model batch
+  # containers -- must_run = true reflects that a stopped server is
+  # drift, not an expected end state.
+  must_run = true
   attach   = false
-  rm       = false # keep the stopped container inspectable: `docker logs`, exit code
+  rm       = false
 
-  volumes {
-    host_path      = abspath("${var.harness_root}/task-suite")
-    container_path = "/task-suite"
-    read_only      = true
+  networks_advanced {
+    name    = docker_network.eval_net.name
+    aliases = ["server"]
+  }
+
+  ports {
+    internal = 4096
+    external = var.serve_port
   }
 
   volumes {
@@ -55,51 +59,18 @@ resource "docker_container" "model" {
     container_path = "/home/harness/.local/share/opencode/auth.json"
     read_only      = true
   }
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/results/${each.key}")
-    container_path = "/results"
-    read_only      = false
-  }
 }
 
 # --- Model discovery -----------------------------------------------------
-# Honest limitation, not smoothed over: Terraform's plan/apply model
-# doesn't fit "run this, read its stdout, use it as input" within a
-# single apply the way docker-compose's discover -> adhoc chain does.
-# This resource runs discovery and lets you read the result out of
-# results/discovered/discovered-model.env afterward -- it's a two-phase
-# workflow (apply once to discover, then add the resolved provider/id to
-# var.models and apply again), not a single-command pipeline. For a
-# smoother discovery-to-run flow, use `docker compose run discover` then
-# `docker compose run --env-file results/discovered-model.env adhoc`
-# instead.
-resource "docker_image" "discover" {
-  name = "opencode-model-eval-discover:latest"
-
-  build {
-    context    = var.harness_root
-    dockerfile = "Dockerfile"
-    target     = "harness"
-    build_args = {
-      OPENCODE_IMAGE = var.opencode_image
-      OPENCODE_REF   = var.opencode_ref
-    }
-  }
-
-  triggers = {
-    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
-    discover_sha1   = filesha1("${var.harness_root}/scripts/discover_and_select_model.py")
-  }
-}
-
+# Standalone -- `opencode models --verbose` doesn't require a running
+# serve instance, so this doesn't depend on docker_container.server.
 resource "docker_container" "discover" {
   name  = "opencode-model-eval-discover"
-  image = docker_image.discover.image_id
+  image = docker_image.harness.image_id
 
   entrypoint = ["python3", "/usr/local/bin/discover_and_select_model.py"]
-  # To select a specific model instead of running discovery, override
-  # with: command = ["--model", "zhipu/glm-5.2"]
+  # To select a specific model instead of running discovery:
+  # command = ["--model", "zhipu/glm-5.2"]
 
   must_run = false
   attach   = false
@@ -118,45 +89,33 @@ resource "docker_container" "discover" {
   }
 }
 
-# --- Local model (Ollama-backed) ----------------------------------------
-# Kept as a separate resource pair rather than folded into the for_each
-# map above: it needs network_mode = "host" to reach a host-run Ollama
-# instance, which the cloud-routed models don't need and shouldn't carry.
-# Mirrors docker-compose.yml's separate gemma4-31b-local service for the
-# same reason.
-resource "docker_image" "gemma4_local" {
-  name = "opencode-model-eval-gemma4-31b-local:latest"
+# --- Eval runs -----------------------------------------------------------
+# One container per model in var.models, but NO per-model image -- every
+# entry shares docker_image.harness and only differs by runtime env vars
+# (OPENCODE_MODEL_PROVIDER/ID), talking to the one server container over
+# the shared network. This is the concrete difference from the old
+# design: adding a model here costs zero rebuild.
+resource "docker_container" "eval" {
+  for_each = var.models
 
-  build {
-    context    = var.harness_root
-    dockerfile = "Dockerfile"
-    build_args = {
-      OPENCODE_IMAGE = var.opencode_image
-      OPENCODE_REF   = var.opencode_ref
-      MODEL_PROVIDER = "ollama"
-      MODEL_ID       = "gemma4:31b"
-    }
+  name  = "opencode-model-eval-eval-${each.key}"
+  image = docker_image.harness.image_id
+
+  command = ["eval-client"]
+
+  must_run = false
+  attach   = false
+  rm       = false
+
+  networks_advanced {
+    name = docker_network.eval_net.name
   }
 
-  triggers = {
-    dockerfile_sha1      = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1      = filesha1("${var.harness_root}/entrypoint.sh")
-    run_test_ladder_sha1 = filesha1("${var.harness_root}/scripts/run_test_ladder.py")
-    config_sha1          = filesha1("${var.harness_root}/config/opencode.base.json")
-  }
-}
-
-resource "docker_container" "gemma4_local" {
-  name  = "opencode-model-eval-gemma4-31b-local"
-  image = docker_image.gemma4_local.image_id
-
-  must_run     = false
-  attach       = false
-  rm           = false
-  network_mode = "host"
-  # network_mode = "host" is Linux-only in Docker; this resource will not
-  # behave the same under Docker Desktop on macOS/Windows. Not resolved
-  # by this config — same caveat as docker-compose.yml.
+  env = [
+    "OPENCODE_SERVER_URL=http://server:4096",
+    "OPENCODE_MODEL_PROVIDER=${each.value.provider}",
+    "OPENCODE_MODEL_ID=${each.value.id}",
+  ]
 
   volumes {
     host_path      = abspath("${var.harness_root}/task-suite")
@@ -171,7 +130,59 @@ resource "docker_container" "gemma4_local" {
   }
 
   volumes {
-    host_path      = abspath("${var.harness_root}/results/gemma4-31b-local")
+    host_path      = abspath("${var.harness_root}/results")
+    container_path = "/results"
+    read_only      = false
+  }
+
+  depends_on = [docker_container.server]
+  # NOTE: Terraform's depends_on, like Compose's, only orders container
+  # creation -- it does not wait for the server to actually be listening.
+  # entrypoint.sh's eval-client mode polls before running, same gap
+  # covered the same way as in docker-compose.yml.
+}
+
+# --- Local model (Ollama-backed) ----------------------------------------
+# Still needs network_mode = "host" to reach a host-run Ollama instance,
+# which the shared eval_net doesn't provide -- kept as its own resource
+# for that reason, same as before, but now shares docker_image.harness
+# too rather than a separate per-model build.
+resource "docker_container" "gemma4_local" {
+  name  = "opencode-model-eval-gemma4-31b-local"
+  image = docker_image.harness.image_id
+
+  command = ["eval-client"]
+
+  must_run     = false
+  attach       = false
+  rm           = false
+  network_mode = "host"
+  # network_mode = "host" is Linux-only in Docker; this resource will not
+  # behave the same under Docker Desktop on macOS/Windows. Not resolved
+  # by this config — same caveat as docker-compose.yml. Also: on host
+  # networking, "server:4096" won't resolve (no user-defined network DNS)
+  # -- set OPENCODE_SERVER_URL to the host's actual reachable address.
+
+  env = [
+    "OPENCODE_SERVER_URL=${var.gemma4_local_server_url}",
+    "OPENCODE_MODEL_PROVIDER=ollama",
+    "OPENCODE_MODEL_ID=gemma4:31b",
+  ]
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/task-suite")
+    container_path = "/task-suite"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/auth-data/auth.json")
+    container_path = "/home/harness/.local/share/opencode/auth.json"
+    read_only      = true
+  }
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/results")
     container_path = "/results"
     read_only      = false
   }

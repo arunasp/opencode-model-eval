@@ -1,15 +1,13 @@
 output "next_step" {
-  description = "Run this after apply to tail each model's run as it completes."
+  description = "Run this after apply to tail the server and each model's eval run as it completes."
   value = join("\n", concat(
-    [for k, c in docker_container.model : "docker logs -f ${c.name}   # ${var.models[k].provider}/${var.models[k].id}"],
+    ["docker logs -f ${docker_container.server.name}   # persistent opencode serve"],
+    [for k, c in docker_container.eval : "docker logs -f ${c.name}   # ${var.models[k].provider}/${var.models[k].id}"],
     ["docker logs -f ${docker_container.gemma4_local.name}   # ollama/gemma4:31b"]
   ))
 }
 
 output "results_dirs" {
-  description = "Host paths where each model's artifact-backed results land."
-  value = merge(
-    { for k in keys(var.models) : k => abspath("${var.harness_root}/results/${k}") },
-    { "gemma4-31b-local" = abspath("${var.harness_root}/results/gemma4-31b-local") }
-  )
+  description = "Host path where results land. Unlike the old per-model design, run_eval_client.py computes its own model-slug subdirectory under a single shared results/ root (provider_modelid, e.g. results/opencode_hy3-free/) -- there isn't a separate terraform-key-named directory per model anymore, since the eval containers all mount the same host results/ path."
+  value       = abspath("${var.harness_root}/results")
 }

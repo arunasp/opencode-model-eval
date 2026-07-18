@@ -1,6 +1,6 @@
 name: opencode-model-eval
 
-x-model-defaults: &model-defaults
+x-harness-defaults: &harness-defaults
   build:
     context: .
     dockerfile: Dockerfile
@@ -10,120 +10,80 @@ x-model-defaults: &model-defaults
       # you've verified it against your own `docker inspect` output — see
       # README for why "latest" is only a placeholder default.
       OPENCODE_REF: ${OPENCODE_REF:-latest}
-  volumes:
-    - ./task-suite:/task-suite:ro
-    # Scoped to one provider key via scripts/extract-opencode-key.sh —
-    # narrower than mounting your real, multi-provider auth.json wholesale.
-    - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
   # No network egress restriction is applied here at the compose level —
-  # each provider's API host still needs outbound access. Add a network
+  # the provider API host still needs outbound access. Add a network
   # policy at the host/firewall layer if you want per-model egress scoping.
 
 services:
-  # Resolves a model before you know which one you want, using the
-  # shared harness layer directly (no MODEL_PROVIDER/MODEL_ID baked in --
-  # that's the whole point, this runs before that's decided). Writes
-  # results/discovered-model.env; feed it into a subsequent run via
-  # `docker compose run --env-file results/discovered-model.env adhoc`
-  # or read it manually and pass values to the `adhoc` service below.
-  #
-  # For a specific model rather than auto-discovery, use --model
-  # directly: `docker compose run discover python3
-  # /usr/local/bin/discover_and_select_model.py --model zhipu/glm-5.2`
+  # Single, static, persistent opencode server. This is the whole point
+  # of the redesign: no more per-model image builds -- model selection
+  # is a request parameter now (server/routes/instance/httpapi/handlers
+  # /session.ts confirms providerID/modelID accepted per-request), not a
+  # Docker build arg. Started once, stays up, every eval run and every
+  # model under test talks to this same container over HTTP.
+  server:
+    <<: *harness-defaults
+    command: ["serve"]
+    ports:
+      - "${OPENCODE_SERVE_PORT:-4096}:4096"
+    volumes:
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4096/session', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Resolves a model without needing the server running -- discovery
+  # uses `opencode models --verbose` directly (a standalone CLI command
+  # against provider config, confirmed not to require a running serve
+  # instance), not an HTTP call to the server service.
   discover:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: harness
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
+    <<: *harness-defaults
     entrypoint: ["python3", "/usr/local/bin/discover_and_select_model.py"]
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results:/results
+    # For a specific model instead of auto-discovery:
+    # docker compose run --rm discover python3 /usr/local/bin/discover_and_select_model.py --model zhipu/glm-5.2
 
-  # Runs the eval suite against whatever OPENCODE_MODEL_PROVIDER/
-  # OPENCODE_MODEL_ID are set at `docker compose run` time -- e.g. the
-  # output of the `discover` service above, or any provider/model you
-  # want to test ad-hoc without adding a new named service and rebuilding
-  # a model-specific image layer for it.
-  adhoc:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: harness
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
+  # Runs the structured test ladder against whatever
+  # OPENCODE_MODEL_PROVIDER/OPENCODE_MODEL_ID are set to, talking to the
+  # `server` service over HTTP -- "the rest is just API job." Depends_on
+  # only waits for the server container to start, not for it to actually
+  # be listening, so entrypoint.sh's eval-client mode polls before
+  # running (see entrypoint.sh).
+  eval:
+    <<: *harness-defaults
+    command: ["eval-client"]
+    depends_on:
+      server:
+        condition: service_healthy
     environment:
+      OPENCODE_SERVER_URL: "http://server:4096"
       OPENCODE_MODEL_PROVIDER: ${OPENCODE_MODEL_PROVIDER:?set this, e.g. from discover's output}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:?set this, e.g. from discover's output}
     volumes:
       - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results/adhoc:/results
+      - ./results:/results
 
-  hy3:
-    <<: *model-defaults
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
-        MODEL_PROVIDER: opencode
-        MODEL_ID: hy3-free
-    volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results/hy3:/results
-
-  deepseek-v4-pro:
-    <<: *model-defaults
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
-        MODEL_PROVIDER: deepseek
-        MODEL_ID: deepseek-v4-pro
-    volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results/deepseek-v4-pro:/results
-
-  glm-5-2:
-    <<: *model-defaults
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
-        MODEL_PROVIDER: zhipu
-        MODEL_ID: glm-5.2
-    volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results/glm-5-2:/results
-
-  gemma4-31b-local:
-    <<: *model-defaults
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
-        OPENCODE_REF: ${OPENCODE_REF:-latest}
-        MODEL_PROVIDER: ollama
-        MODEL_ID: gemma4:31b
-    volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results/gemma4-31b-local:/results
-    # Requires Ollama reachable from inside the container — either run
-    # Ollama on the host with the container on the host network, or point
-    # this at a networked Ollama instance. Not resolved by this file.
+  # Local Ollama-backed model. Uses host networking to reach a host-run
+  # Ollama instance -- "server:4096" does NOT resolve on host networking
+  # (no user-defined-network DNS), so OPENCODE_SERVER_URL points at
+  # localhost instead. Linux-only; adjust for Docker Desktop on
+  # macOS/Windows.
+  gemma4-local:
+    <<: *harness-defaults
+    command: ["eval-client"]
     network_mode: host
+    environment:
+      OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-4096}"
+      OPENCODE_MODEL_PROVIDER: ollama
+      OPENCODE_MODEL_ID: "gemma4:31b"
+    volumes:
+      - ./task-suite:/task-suite:ro
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ./results:/results
