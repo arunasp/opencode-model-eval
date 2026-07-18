@@ -23,14 +23,35 @@ REQUEST SCHEMA -- confirmed from opencode's actual source, not guessed:
       }
     -> SessionV1.WithParts
 
-RESPONSE SCHEMA -- NOT fully confirmed, disclosed rather than hidden:
-`SessionV1.WithParts`'s exact field layout was not traced through the
-module graph before this was built (diminishing returns after several
-greps that only found re-exports, not the definition). extract_reply()
-below tries several plausible field paths defensively. If a real run
-produces empty/wrong transcripts, this is the first thing to check --
-print the raw response JSON and adjust extract_reply() before assuming
-the scoring logic is broken.
+RESPONSE SCHEMA -- CONFIRMED empirically, not just from source. Ran a
+real opencode serve instance (opencode-ai@1.18.3 via npm) against a
+mock OpenAI-compatible backend under my own control and captured the
+actual response:
+    {
+      "info": {..., "finish": "stop", "id": "msg_...", "sessionID": "..."},
+      "parts": [
+        {"type": "step-start", ...},
+        {"type": "text", "text": "the actual reply", ...},
+        {"type": "step-finish", "reason": "stop", ...}
+      ]
+    }
+extract_reply()'s primary path (top-level "parts", filter on
+type == "text") matches this exactly. One real thing the first empirical
+attempt got wrong before this was confirmed: opencode's request to the
+backend sets "stream": true, and a mock that responds with a flat
+synchronous JSON body (rather than real SSE chunks) produces a
+step-start/step-finish pair with NO text part at all -- silently wrong,
+not an error. Fixed by having the mock emit actual
+`data: {...}\n\n` SSE chunks. Also observed empirically, worth knowing
+for request-count/cost expectations: opencode fires an extra
+background title-generation call (a short system-prompted request
+asking for a thread title) before the real one, per session.
+
+Tool-call part shape specifically was NOT exercised in this empirical
+test (the mock never triggered a tool call) -- extract_reply()'s
+`"tool" in ptype.lower()` branch is a reasonable inference consistent
+with the now-confirmed type-discriminated-parts-array pattern, but that
+specific branch remains unverified against real tool-call output.
 """
 import json
 import os
@@ -77,10 +98,11 @@ def send_message(base_url: str, session_id: str, provider: str, model_id: str, t
 
 
 def extract_reply(response: dict) -> tuple[str, list[dict]]:
-    """Best-effort extraction of (assistant_text, tool_calls) from a
-    SessionV1.WithParts-shaped response. Tries several plausible field
-    paths since the exact schema wasn't traced to its definition --
-    see module docstring.
+    """Extracts (assistant_text, tool_calls) from a SessionV1.WithParts
+    response. Primary path (top-level "parts", filter on type=="text")
+    confirmed empirically against a real opencode serve instance -- see
+    module docstring. The message.parts fallback and the tool-call
+    branch remain defensive/inferred, not exercised by that same test.
     """
     parts = response.get("parts")
     if parts is None and isinstance(response.get("message"), dict):

@@ -67,17 +67,24 @@ against a real run before you trust the pipeline:
    docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/anomalyco/opencode:latest
    # then set OPENCODE_REF=sha256:<digest-you-just-saw> in .env
    ```
-3. **`opencode serve`'s request/response schema.** The *request* side is
-   confirmed from real source (`POST /session` per `Session.CreateInput`,
-   `POST /session/{id}/message` per `PromptInput`/`ModelRef`) — these
-   are genuinely sourced, not guessed. The *response* shape
-   (`SessionV1.WithParts`) was **not** traced to its definition before
-   this was built (diminishing returns after several greps that only
-   found re-exports). `run_eval_client.py`'s `extract_reply()` tries
-   several plausible field paths defensively. **If a real run produces
-   empty or malformed transcripts, this is the first thing to check** —
-   print the raw JSON response and adjust `extract_reply()` before
-   assuming the scoring logic itself is broken.
+3. **`opencode serve`'s request/response schema.** Both sides are now
+   confirmed, not guessed. Request: sourced directly from real code
+   (`POST /session` per `Session.CreateInput`, `POST /session/{id}/message`
+   per `PromptInput`/`ModelRef`). Response: confirmed **empirically** —
+   ran a real `opencode serve` instance (`opencode-ai@1.18.3` via npm)
+   against a mock OpenAI-compatible backend under full control and
+   captured the actual reply shape: `{"info": {...}, "parts": [{"type":
+   "text", "text": "..."}, ...]}`. `run_eval_client.py`'s
+   `extract_reply()` matches this exactly. One thing the empirical test
+   also caught: opencode requests `stream: true` from the backend — a
+   mock that answers with flat synchronous JSON (not real SSE chunks)
+   silently produces a response with no text part at all, no error.
+   **Tool-call part shape specifically was not exercised** by this test
+   (the mock never triggered a tool call) — that branch of
+   `extract_reply()` remains an inference, not empirically confirmed.
+   Also observed, worth knowing for request-count/cost expectations:
+   opencode fires an extra background title-generation call before the
+   real one, per session.
 4. **Provider slugs.** `hy3` is **verified** — corrected from
    `opencode-zen/hy3` to `opencode/hy3-free` against the live OpenCode
    Zen API in a prior session (the docs page omitted `hy3-free` while
@@ -200,8 +207,11 @@ A category's ceiling is reported even on a tier-1 fail (ceiling = 0).
   `opencode.base.json`) — fine for pure reasoning/knowledge tasks, but
   this blocks agentic/tool-use capability tests. A second config profile
   with permissions opened up is needed before running that category.
-- **`SessionV1.WithParts`'s exact response schema is unverified** — see
-  item 3 in "Before first run" above.
+- **`extract_reply()`'s tool-call part shape is still an inference** —
+  the empirical test that confirmed the text-part response shape never
+  triggered a tool call, so that specific branch (`"tool" in
+  ptype.lower()`) hasn't been checked against real output. If a
+  transcript is missing tool-call detail, check this first.
 - **`manual_check` tiers require a human or a separate test run** —
   `coding`, `instruction_following`, and `failure_diagnostics_and_fixing`
   tiers can't be auto-passed by CVV scoring alone. See the `report.json`
