@@ -56,6 +56,7 @@ resource "docker_container" "server" {
 
   env = [
     "OPENCODE_OLLAMA_BASE_URL=${var.ollama_base_url}",
+    "OPENCODE_OLLAMA_TAGS_URL=${var.ollama_tags_url}",
   ]
 
   networks_advanced {

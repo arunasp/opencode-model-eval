@@ -34,8 +34,29 @@ mode="${1:-serve}"
 
 case "${mode}" in
   serve)
+    # Auto-detect local Ollama models before opencode starts, so the
+    # config reflects whatever's actually installed on the host right
+    # now rather than a hardcoded list going stale every time a model
+    # is pulled/removed on Cyberdyne. Graceful: if Ollama is
+    # unreachable, the discovery script writes the baked-in static
+    # list unchanged (see discover_local_ollama_models.py) -- this is
+    # never allowed to block or fail startup.
+    runtime_config="${HOME}/.config/opencode/opencode.runtime.json"
+    log "discovering local Ollama models before startup..."
+    python3 /usr/local/bin/discover_local_ollama_models.py \
+      --base-config "${OPENCODE_CONFIG}" \
+      --ollama-tags-url "${OPENCODE_OLLAMA_TAGS_URL:-http://host.docker.internal:11434/api/tags}" \
+      --output "${runtime_config}" \
+      --provider-key "${OPENCODE_OLLAMA_PROVIDER_KEY:-local/ollama}" \
+      --timeout "${OPENCODE_OLLAMA_DISCOVERY_TIMEOUT:-3}" \
+      || log "discovery script itself failed unexpectedly (not just Ollama-unreachable) -- continuing with baked-in static config at ${OPENCODE_CONFIG}, not blocking startup over this"
+    if [ -f "${runtime_config}" ]; then
+      export OPENCODE_CONFIG="${runtime_config}"
+    fi
+
     log "starting opencode serve on ${HOSTNAME_BIND}:${PORT}"
     log "HOME resolved to: ${HOME}"
+    log "OPENCODE_CONFIG resolved to: ${OPENCODE_CONFIG}"
     # --port/--hostname explicitly set: opencode's real defaults are
     # port=0 (random) and hostname=127.0.0.1 (loopback only) -- neither
     # works for a container another service needs to reach predictably.

@@ -105,11 +105,28 @@ against a real run before you trust the pipeline:
    2026-07-20) -- this only works if Ollama is bound to `0.0.0.0`, not
    its default `127.0.0.1`-only loopback bind. Start Ollama with
    `OLLAMA_HOST=0.0.0.0:11434` first. `config/opencode.base.json`'s
-   `provider["local/ollama"]` block and all five `OPENCODE_MODEL_ID` values are
-   asserted to match `ollama list` on Cyberdyne as of 2026-07-20, not
-   independently confirmed against a live `opencode models` listing --
-   same "stated, not confirmed" status as the deepseek/zhipu slugs
-   above, for the same reason (no Docker/Ollama access here).
+   `provider["local/ollama"]` block is now a FALLBACK, not the source
+   of truth -- see #7.
+7. **Model auto-discovery vs. the explicit eval-target list -- two
+   different things, don't conflate them.** At `server` startup,
+   `discover_local_ollama_models.py` queries Ollama's native
+   `/api/tags` and regenerates `provider["local/ollama"].models` so
+   opencode knows about whatever's actually installed on the host
+   right now -- fixes config staleness (a model pulled/removed on
+   Cyberdyne shows up without editing JSON). It does NOT decide which
+   models the eval containers below (`gemma4-local`,
+   `qwen3-coder-local`, etc.) actually run the test suite against --
+   that's still the explicit `docker-compose.yml`/`terraform` service
+   list, unaffected by discovery. Add a sixth Ollama model on the
+   host and the provider auto-discovers it (opencode could route to
+   it manually), but you still need a new eval-client service entry
+   to run the test ladder against it automatically. Discovery
+   degrades gracefully: if Ollama's unreachable at server startup,
+   the baked-in static 5-model list is used unchanged, not a hard
+   failure -- tested against a real local HTTP server standing in for
+   Ollama (both the success and unreachable paths), not just assumed.
+   NOT tested: the real container startup path (entrypoint.sh calling
+   this at `serve` time) -- no Docker to run that here.
 
 ## Setup
 

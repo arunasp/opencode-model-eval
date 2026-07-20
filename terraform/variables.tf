@@ -34,6 +34,12 @@ variable "ollama_base_url" {
   default     = "http://host.docker.internal:11434/v1"
 }
 
+variable "ollama_tags_url" {
+  description = "Ollama's native /api/tags endpoint (NOT the OpenAI-compat /v1 path) -- used by discover_local_ollama_models.py at server startup to auto-detect installed models, same host/port as var.ollama_base_url."
+  type        = string
+  default     = "http://host.docker.internal:11434/api/tags"
+}
+
 variable "local_ollama_models" {
   description = "Map of local-model slug -> Ollama model ID, matching `ollama list` on the host. All share the SAME docker_image.harness (no per-model build) and network_mode=host (to reach the server via local_server_url). Model IDs verified against Cyberdyne's `ollama list` as of 2026-07-20 -- re-check that listing before relying on a name here if it's since changed."
   type        = map(string)

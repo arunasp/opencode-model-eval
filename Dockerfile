@@ -65,6 +65,7 @@ RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-su
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY --chmod=0755 scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
+COPY --chmod=0755 scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
 COPY --chmod=0755 scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
 COPY --chmod=0644 scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
 COPY --chmod=0644 scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
