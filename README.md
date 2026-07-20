@@ -127,6 +127,27 @@ against a real run before you trust the pipeline:
    Ollama (both the success and unreachable paths), not just assumed.
    NOT tested: the real container startup path (entrypoint.sh calling
    this at `serve` time) -- no Docker to run that here.
+8. **`run_eval_client.py`'s response-schema claim now has a real,
+   committed e2e test behind it** (`scripts/test_run_eval_client_e2e.py`
+   + `scripts/tools/mock_openai_backend.py`) -- previously this was a
+   prior session's one-off finding, asserted in a docstring with no
+   re-runnable artifact. The test installs real `opencode-ai@1.18.3`
+   via npm, runs `opencode serve` as a subprocess, and drives it
+   through the project's actual `create_session`/`send_message`/
+   `extract_reply()` functions against a real (if minimal) SSE-emitting
+   backend. **Could not get a passing run in this environment**: `POST
+   /session` hangs indefinitely and the mock backend's request log
+   stays completely empty, meaning opencode never reaches the
+   configured provider at all -- points at an outbound network call
+   opencode itself makes during session creation (telemetry/update-
+   check, unconfirmed which) to a domain outside this sandbox's
+   restricted allowlist (`opencode.ai` is not in it), with no observed
+   fast-fail/offline mode. Isolated by testing the mock backend
+   directly, bypassing opencode entirely -- confirmed correct on its
+   own (valid `/v1/models`, valid SSE stream). Run this test on
+   Cyberdyne (unrestricted network) where it should actually pass; if
+   it still hangs there, the cause is something other than sandbox
+   egress restrictions and needs fresh diagnosis.
 
 ## Setup
 

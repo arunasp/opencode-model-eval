@@ -26,7 +26,10 @@ REQUEST SCHEMA -- confirmed from opencode's actual source, not guessed:
 RESPONSE SCHEMA -- CONFIRMED empirically, not just from source. Ran a
 real opencode serve instance (opencode-ai@1.18.3 via npm) against a
 mock OpenAI-compatible backend under my own control and captured the
-actual response:
+actual response. THIS IS NOW A COMMITTED, RE-RUNNABLE TEST, not just a
+prior session's claim left undocumented in the repo --
+see scripts/test_run_eval_client_e2e.py and
+scripts/tools/mock_openai_backend.py:
     {
       "info": {..., "finish": "stop", "id": "msg_...", "sessionID": "..."},
       "parts": [
