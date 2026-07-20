@@ -6,7 +6,7 @@
     "bash": "deny"
   },
   "provider": {
-    "ollama": {
+    "local/ollama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Ollama (local, via host.docker.internal)",
       "options": {

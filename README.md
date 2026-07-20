@@ -105,7 +105,7 @@ against a real run before you trust the pipeline:
    2026-07-20) -- this only works if Ollama is bound to `0.0.0.0`, not
    its default `127.0.0.1`-only loopback bind. Start Ollama with
    `OLLAMA_HOST=0.0.0.0:11434` first. `config/opencode.base.json`'s
-   `provider.ollama` block and all five `OPENCODE_MODEL_ID` values are
+   `provider["local/ollama"]` block and all five `OPENCODE_MODEL_ID` values are
    asserted to match `ollama list` on Cyberdyne as of 2026-07-20, not
    independently confirmed against a live `opencode models` listing --
    same "stated, not confirmed" status as the deepseek/zhipu slugs

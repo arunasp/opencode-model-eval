@@ -183,7 +183,7 @@ resource "docker_container" "local_ollama" {
 
   env = [
     "OPENCODE_SERVER_URL=${var.local_server_url}",
-    "OPENCODE_MODEL_PROVIDER=ollama",
+    "OPENCODE_MODEL_PROVIDER=local/ollama",
     "OPENCODE_MODEL_ID=${each.value}",
   ]
 

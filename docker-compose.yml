@@ -19,7 +19,7 @@ x-harness-defaults: &harness-defaults
 # model needs EXCEPT OPENCODE_MODEL_ID, which differs per service.
 x-local-ollama-env: &local-ollama-env
   OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-4096}"
-  OPENCODE_MODEL_PROVIDER: ollama
+  OPENCODE_MODEL_PROVIDER: local/ollama
 
 x-local-ollama-defaults: &local-ollama-defaults
   <<: *harness-defaults
