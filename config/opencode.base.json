@@ -4,5 +4,22 @@
   "permission": {
     "edit": "deny",
     "bash": "deny"
+  },
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local, via host.docker.internal)",
+      "options": {
+        "baseURL": "{env:OPENCODE_OLLAMA_BASE_URL}",
+        "apiKey": "ollama"
+      },
+      "models": {
+        "gemma4:31b": {},
+        "nemotron-3-nano:30b": {},
+        "qwen3-coder:30b": {},
+        "qwen3-coder-fixed:30b": {},
+        "qwen2.5-coder:7b": {}
+      }
+    }
   }
 }

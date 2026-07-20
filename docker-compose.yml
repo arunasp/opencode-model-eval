@@ -14,6 +14,28 @@ x-harness-defaults: &harness-defaults
   # the provider API host still needs outbound access. Add a network
   # policy at the host/firewall layer if you want per-model egress scoping.
 
+# Shared env block for every local-model service below (referenced with
+# a nested merge key, not repeated per model) -- everything each local
+# model needs EXCEPT OPENCODE_MODEL_ID, which differs per service.
+x-local-ollama-env: &local-ollama-env
+  OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-4096}"
+  OPENCODE_MODEL_PROVIDER: ollama
+
+x-local-ollama-defaults: &local-ollama-defaults
+  <<: *harness-defaults
+  command: ["eval-client"]
+  # Host networking so this eval-client container reaches the server
+  # container's published port via localhost -- "server:4096" does NOT
+  # resolve on host networking (no user-defined-network DNS). This leg
+  # (eval-client -> server) is unrelated to and unaffected by the
+  # server -> Ollama networking note below. Linux-only; adjust for
+  # Docker Desktop on macOS/Windows.
+  network_mode: host
+  volumes:
+    - ./task-suite:/task-suite:ro
+    - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+    - ./results:/results
+
 services:
   # Single, static, persistent opencode server. This is the whole point
   # of the redesign: no more per-model image builds -- model selection
@@ -26,6 +48,19 @@ services:
     command: ["serve"]
     ports:
       - "${OPENCODE_SERVE_PORT:-4096}:4096"
+    # Linux-only (matches Cyberdyne): routes host.docker.internal to the
+    # docker host's bridge gateway, since this container is on the
+    # default bridge network, not host mode. host-gateway only reaches
+    # services bound to 0.0.0.0 -- if Ollama is bound to 127.0.0.1 only
+    # (its default), this will NOT work until Ollama is started with
+    # OLLAMA_HOST=0.0.0.0:11434. Unverified beyond "resolves the
+    # networking path correctly on paper" -- no Docker/Ollama access in
+    # the environment this was authored in, same caveat as everything
+    # else in "Before first run" in the README.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OPENCODE_OLLAMA_BASE_URL: "${OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
     restart: unless-stopped
@@ -70,20 +105,37 @@ services:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results:/results
 
-  # Local Ollama-backed model. Uses host networking to reach a host-run
-  # Ollama instance -- "server:4096" does NOT resolve on host networking
-  # (no user-defined-network DNS), so OPENCODE_SERVER_URL points at
-  # localhost instead. Linux-only; adjust for Docker Desktop on
-  # macOS/Windows.
+  # Local Ollama-backed models. All five share x-local-ollama-defaults
+  # and x-local-ollama-env; only OPENCODE_MODEL_ID differs per service.
+  # Model IDs match `ollama list` on Cyberdyne as of 2026-07-20 --
+  # re-check that listing before relying on a name here if it's since
+  # changed.
   gemma4-local:
-    <<: *harness-defaults
-    command: ["eval-client"]
-    network_mode: host
+    <<: *local-ollama-defaults
     environment:
-      OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-4096}"
-      OPENCODE_MODEL_PROVIDER: ollama
+      <<: *local-ollama-env
       OPENCODE_MODEL_ID: "gemma4:31b"
-    volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
-      - ./results:/results
+
+  nemotron-3-nano-local:
+    <<: *local-ollama-defaults
+    environment:
+      <<: *local-ollama-env
+      OPENCODE_MODEL_ID: "nemotron-3-nano:30b"
+
+  qwen3-coder-local:
+    <<: *local-ollama-defaults
+    environment:
+      <<: *local-ollama-env
+      OPENCODE_MODEL_ID: "qwen3-coder:30b"
+
+  qwen3-coder-fixed-local:
+    <<: *local-ollama-defaults
+    environment:
+      <<: *local-ollama-env
+      OPENCODE_MODEL_ID: "qwen3-coder-fixed:30b"
+
+  qwen2.5-coder-local:
+    <<: *local-ollama-defaults
+    environment:
+      <<: *local-ollama-env
+      OPENCODE_MODEL_ID: "qwen2.5-coder:7b"

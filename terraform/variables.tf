@@ -22,10 +22,28 @@ variable "serve_port" {
   default     = 4096
 }
 
-variable "gemma4_local_server_url" {
-  description = "URL the gemma4-31b-local container (host networking, no shared-network DNS) uses to reach the server container. Defaults to localhost since network_mode=host puts it on the same network namespace as the Docker host -- adjust if your server container's published port differs from var.serve_port for some reason."
+variable "local_server_url" {
+  description = "URL local-model eval containers (host networking, no shared-network DNS) use to reach the server container. Defaults to localhost since network_mode=host puts them on the same network namespace as the Docker host."
   type        = string
   default     = "http://localhost:4096"
+}
+
+variable "ollama_base_url" {
+  description = "URL the SERVER container (bridge networking, not host mode) uses to reach a host-run Ollama instance -- distinct from local_server_url above, which is the opposite direction (eval-client -> server). host.docker.internal:host-gateway only reaches services bound to 0.0.0.0; if Ollama is bound to 127.0.0.1 only (its default), this will not work until Ollama is started with OLLAMA_HOST=0.0.0.0:11434."
+  type        = string
+  default     = "http://host.docker.internal:11434/v1"
+}
+
+variable "local_ollama_models" {
+  description = "Map of local-model slug -> Ollama model ID, matching `ollama list` on the host. All share the SAME docker_image.harness (no per-model build) and network_mode=host (to reach the server via local_server_url). Model IDs verified against Cyberdyne's `ollama list` as of 2026-07-20 -- re-check that listing before relying on a name here if it's since changed."
+  type        = map(string)
+  default = {
+    "gemma4-local"             = "gemma4:31b"
+    "nemotron-3-nano-local"    = "nemotron-3-nano:30b"
+    "qwen3-coder-local"        = "qwen3-coder:30b"
+    "qwen3-coder-fixed-local"  = "qwen3-coder-fixed:30b"
+    "qwen2.5-coder-local"      = "qwen2.5-coder:7b"
+  }
 }
 
 variable "models" {

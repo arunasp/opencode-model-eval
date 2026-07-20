@@ -3,7 +3,7 @@ output "next_step" {
   value = join("\n", concat(
     ["docker logs -f ${docker_container.server.name}   # persistent opencode serve"],
     [for k, c in docker_container.eval : "docker logs -f ${c.name}   # ${var.models[k].provider}/${var.models[k].id}"],
-    ["docker logs -f ${docker_container.gemma4_local.name}   # ollama/gemma4:31b"]
+    [for k, c in docker_container.local_ollama : "docker logs -f ${c.name}   # ollama/${var.local_ollama_models[k]}"]
   ))
 }
 

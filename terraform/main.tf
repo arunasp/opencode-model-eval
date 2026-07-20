@@ -44,6 +44,20 @@ resource "docker_container" "server" {
   attach   = false
   rm       = false
 
+  # Linux-only (matches Cyberdyne): routes host.docker.internal to the
+  # docker host's bridge gateway. See var.ollama_base_url's description
+  # for the 0.0.0.0-bind caveat. Unverified beyond "resolves the
+  # networking path correctly on paper" -- no Docker/Ollama access in
+  # the environment this was authored in.
+  host {
+    host = "host.docker.internal"
+    ip   = "host-gateway"
+  }
+
+  env = [
+    "OPENCODE_OLLAMA_BASE_URL=${var.ollama_base_url}",
+  ]
+
   networks_advanced {
     name    = docker_network.eval_net.name
     aliases = ["server"]
@@ -142,13 +156,16 @@ resource "docker_container" "eval" {
   # covered the same way as in docker-compose.yml.
 }
 
-# --- Local model (Ollama-backed) ----------------------------------------
+# --- Local models (Ollama-backed) ---------------------------------------
 # Still needs network_mode = "host" to reach a host-run Ollama instance,
 # which the shared eval_net doesn't provide -- kept as its own resource
-# for that reason, same as before, but now shares docker_image.harness
-# too rather than a separate per-model build.
-resource "docker_container" "gemma4_local" {
-  name  = "opencode-model-eval-gemma4-31b-local"
+# type for that reason. for_each over var.local_ollama_models, same
+# pattern as docker_container.eval above: one container per model, all
+# sharing docker_image.harness, zero rebuild cost to add a model here.
+resource "docker_container" "local_ollama" {
+  for_each = var.local_ollama_models
+
+  name  = "opencode-model-eval-${each.key}"
   image = docker_image.harness.image_id
 
   command = ["eval-client"]
@@ -157,16 +174,17 @@ resource "docker_container" "gemma4_local" {
   attach       = false
   rm           = false
   network_mode = "host"
-  # network_mode = "host" is Linux-only in Docker; this resource will not
-  # behave the same under Docker Desktop on macOS/Windows. Not resolved
-  # by this config — same caveat as docker-compose.yml. Also: on host
-  # networking, "server:4096" won't resolve (no user-defined network DNS)
-  # -- set OPENCODE_SERVER_URL to the host's actual reachable address.
+  # network_mode = "host" is Linux-only in Docker; these resources will
+  # not behave the same under Docker Desktop on macOS/Windows. Also: on
+  # host networking, "server:4096" won't resolve (no user-defined
+  # network DNS) -- var.local_server_url points at localhost instead,
+  # which works because the server container publishes its port to the
+  # Docker host (see docker_container.server's ports block).
 
   env = [
-    "OPENCODE_SERVER_URL=${var.gemma4_local_server_url}",
+    "OPENCODE_SERVER_URL=${var.local_server_url}",
     "OPENCODE_MODEL_PROVIDER=ollama",
-    "OPENCODE_MODEL_ID=gemma4:31b",
+    "OPENCODE_MODEL_ID=${each.value}",
   ]
 
   volumes {

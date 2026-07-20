@@ -99,6 +99,17 @@ against a real run before you trust the pipeline:
    `terraform` binary available). None of this substitutes for an actual
    build/run — do that before trusting this beyond "the pieces are
    internally consistent."
+6. **Local Ollama models' networking path is unverified end-to-end.**
+   The `server` container reaches host-run Ollama via
+   `host.docker.internal:host-gateway` (bridge networking, added
+   2026-07-20) -- this only works if Ollama is bound to `0.0.0.0`, not
+   its default `127.0.0.1`-only loopback bind. Start Ollama with
+   `OLLAMA_HOST=0.0.0.0:11434` first. `config/opencode.base.json`'s
+   `provider.ollama` block and all five `OPENCODE_MODEL_ID` values are
+   asserted to match `ollama list` on Cyberdyne as of 2026-07-20, not
+   independently confirmed against a live `opencode models` listing --
+   same "stated, not confirmed" status as the deepseek/zhipu slugs
+   above, for the same reason (no Docker/Ollama access here).
 
 ## Setup
 
@@ -139,9 +150,18 @@ docker compose run --rm discover python3 /usr/local/bin/discover_and_select_mode
 export $(cat results/discovered-model.env | xargs)
 docker compose run --rm eval
 
-# Local Ollama model:
-docker compose run --rm gemma4-local   # network_mode: host, Linux only;
-                                         # start Ollama on the host first
+# Local Ollama models (all five share the same harness image):
+docker compose run --rm gemma4-local
+docker compose run --rm nemotron-3-nano-local
+docker compose run --rm qwen3-coder-local
+docker compose run --rm qwen3-coder-fixed-local
+docker compose run --rm qwen2.5-coder-local
+# network_mode: host, Linux only; start Ollama on the host first, with
+# OLLAMA_HOST=0.0.0.0:11434 (its default, loopback-only, is NOT reachable
+# from the server container's host.docker.internal route). Unverified
+# beyond "resolves on paper" -- no Docker/Ollama access in the
+# environment this was authored in; confirm end-to-end on real hardware
+# before trusting results from these five.
 ```
 
 `discover_and_select_model.py`'s free-tier heuristic (cost field absent
