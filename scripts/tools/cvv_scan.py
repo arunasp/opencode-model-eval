@@ -4,7 +4,10 @@
 Heuristic, non-authoritative first-pass detector for the failure patterns
 catalogued in the AGENTS.md Verification Gate: inference-as-fact drift,
 performative verification, training-precedence override, unstructured
-self-correction, hedge-dropping, and blanket closing self-assessments.
+self-correction, hedge-dropping, blanket closing self-assessments, and
+secondary-rendering trust (treating a tool's rendering/summary of an
+artifact as equivalent to the artifact itself when direct access was
+available).
 
 This is a pattern-matching aid, not a ground-truth classifier. Per CVV
 rule 2 (prohibition on self-referential tests), this script's findings
@@ -97,6 +100,30 @@ BLANKET_CLOSING_CLAIM = re.compile(
 THIRD_PARTY_SIGNAL = re.compile(
     r"\b(node_modules|effect@|npm pack|third[- ]party|the library|"
     r"the runtime|standard effect|standard node|standard \w+ behavior)\b",
+    re.IGNORECASE,
+)
+
+# Pattern 6: secondary-rendering trust. A tool call that only renders/
+# summarizes an artifact (a fetched webpage's markdown extraction of a
+# repo page, a search snippet) is treated as equivalent to inspecting the
+# artifact itself, when a direct-access tool (clone, pull, exec, cat) was
+# available and never called before a confident claim about that
+# artifact's actual state.
+RENDERING_TOOL_MARKER = re.compile(
+    r"^\*\*Tool:\s*(web_fetch|fetch|browser|web_search)\*\*",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+DIRECT_ACCESS_TOOL_MARKER = re.compile(
+    r"^\*\*Tool:\s*(bash|bash_tool|git|docker|str_replace|create_file|"
+    r"view)\*\*",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+ARTIFACT_STATE_CLAIM = re.compile(
+    r"\b(commit(s)?|repo(sitory)?|codebase|history|architecture|file)\b"
+    r"[^.\n]{0,60}\b(shows?|contains?|confirms?|confirmed|indicates?|"
+    r"is\s+\d|has\s+\d)\b",
     re.IGNORECASE,
 )
 
@@ -279,6 +306,40 @@ def scan_turn(turn_index: int, base_line_no: int, turn_text: str) -> TurnReport:
                         ),
                     )
                 )
+
+    # 6. Rendering-only tool call (web_fetch/fetch/browser/web_search)
+    #    followed by a confident artifact-state claim, with no
+    #    direct-access tool call (bash/git/docker/view/etc.) anywhere
+    #    between the rendering call and the claim.
+    rendering_hits = [m.start() for m in RENDERING_TOOL_MARKER.finditer(turn_text)]
+    direct_access_hits = [
+        m.start() for m in DIRECT_ACCESS_TOOL_MARKER.finditer(turn_text)
+    ]
+    for r_start in rendering_hits:
+        for cm in ARTIFACT_STATE_CLAIM.finditer(turn_text, r_start):
+            intervening_direct_access = any(
+                r_start < d_start < cm.start() for d_start in direct_access_hits
+            )
+            if not intervening_direct_access:
+                report.findings.append(
+                    Finding(
+                        category="SECONDARY_RENDERING_TRUST",
+                        line_no=_line_of(turn_text, cm.start(), base_line_no),
+                        snippet=_snippet(turn_text, cm.start(), cm.end()),
+                        detail=(
+                            "Confident claim about an artifact's state follows "
+                            "a rendering-only tool call (web_fetch/browser/"
+                            "web_search) with no direct-access tool call "
+                            "(bash/git/docker/view) in between. Cross-turn "
+                            "cases (fetch in one turn, claim repeated in a "
+                            "later turn without the artifact ever being "
+                            "opened directly) are NOT caught by this "
+                            "per-turn heuristic -- manual review still "
+                            "needed for those."
+                        ),
+                    )
+                )
+                break  # one flag per rendering call is enough signal
 
     return report
 
