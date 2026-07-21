@@ -223,6 +223,62 @@ against a real run before you trust the pipeline:
     error path with the exact HTTP 500 message format seen live,
     confirming the dot string, `ceiling`, and returned tier count are
     all correct in each case.
+12. **Quota/rate-limit exhaustion is now detected and reported
+    distinctly (`Q`), instead of blocking indefinitely or risking a
+    duplicate message.** Root cause, confirmed by cloning
+    `anomalyco/opencode` into an isolated directory and reading the
+    actual source (not inferred from docs) --
+    `packages/opencode/src/session/retry.ts`: opencode's own retry for
+    provider-side errors (5xx, rate limits, OpenCode Zen/Go's
+    `FreeUsageLimitError`/`GoUsageLimitError`) is unbounded by attempt
+    count or wall-clock time -- confirmed via repo-wide grep, no
+    config-level cap exists anywhere. The `action`/upsell message this
+    produces (e.g. "subscribe to Go") is consumed purely as a passive
+    TUI notification (`packages/tui/src/feature-plugins/system/
+    notifications.ts`) -- there's nothing for a human to click in
+    headless `serve` mode, so a genuine quota ceiling (Zen daily
+    limit/balance exceeded, a provider rate-limit cooldown) would
+    previously have blocked a tier indefinitely with no automatic exit.
+
+    Fix does NOT duplicate or replace opencode's own retry --
+    `quota_aware_send_message()` runs the existing `send_message()`
+    call in a background thread unchanged, and concurrently polls
+    `GET /session/status` (confirmed real states from source: `idle`/
+    `busy`/`retry`, the latter carrying an absolute `next` timestamp
+    computed from opencode's own backoff logic, including real
+    provider `Retry-After` headers when sent). If `next` implies a
+    wait beyond `OPENCODE_QUOTA_WAIT_THRESHOLD_S` (env-configurable,
+    default 3000s / 50 minutes), it calls `POST /session/{id}/abort`
+    (confirmed from source: "stop any ongoing AI processing") and
+    reports quota-exhaustion cleanly -- deliberately never a second
+    blind POST to the same session, which risked duplicating a turn if
+    opencode's original attempt was still processing server-side.
+    `OPENCODE_STATUS_POLL_INTERVAL_S` (default 5s) is separately
+    tunable. No provider-specific branching (NVIDIA vs. Zen vs.
+    anything else) -- opencode's own `next` timestamp already reflects
+    whatever the real provider-specific wait is, so one threshold
+    applied uniformly is the correct design, not per-provider
+    hardcoding.
+
+    Every tier's JSON record now also carries `status_events` -- every
+    distinct status transition observed while polling, not just the
+    terminal outcome, so a tier that passed but needed several
+    internal opencode retries against a rate limit is visibly
+    different from one that passed cleanly on the first attempt.
+
+    Verified with 5 committed tests
+    (`scripts/test_quota_aware_retry.py`), using real
+    `threading.Event`-based coordination (not sleep-and-hope timing):
+    normal fast completion, quota-exhaustion correctly triggering
+    exactly one `abort_session()` call and no resend, a short/
+    legitimate retry backoff under the threshold correctly NOT treated
+    as quota exhaustion (waited out, no abort), full `run_category()`
+    integration confirming the `Q` mark/`quota_wait_seconds`/
+    `status_events` fields, and all pre-existing pass/fail/error-path
+    regression tests still passing unchanged. NOT verified: real
+    behavior against an actual Zen/NVIDIA rate-limit or quota-exceeded
+    response -- would need live credentials in a genuinely throttled
+    state to trigger, which this sandbox doesn't have.
 
 ## Setup
 
@@ -348,12 +404,20 @@ requires human/test confirmation (format compliance, code correctness)
 that this harness can't check automatically. Don't read a
 `needs_manual_review` stop as the same thing as an actual CVV violation.
 Each category entry also carries a `progress_dots` string (`.` pass,
-`F` fail, `R` needs review, `E` request/HTTP error) -- same character
-sequence printed live to the console as each tier runs, and again as
-an aligned grid at the end of the run. `E` specifically means the tier
-never got a real answer to score (e.g. the model ID doesn't exist,
-insufficient balance, a 500) -- treat it as "inconclusive," not as a
-capability failure the way `F` is.
+`F` fail, `R` needs review, `E` request/HTTP error, `Q` quota/rate-limit
+exhausted) -- same character sequence printed live to the console as
+each tier runs, and again as an aligned grid at the end of the run. `E`
+means the tier never got a real answer to score for a genuine
+error (e.g. the model ID doesn't exist, a malformed response, a
+connection failure) -- treat it as "inconclusive," not a capability
+failure the way `F` is. `Q` is a DIFFERENT kind of inconclusive: it
+means opencode's own retry was still legitimately in progress
+(confirmed via `GET /session/status`) when this harness gave up
+waiting past `OPENCODE_QUOTA_WAIT_THRESHOLD_S` -- nothing is wrong
+with the model or the harness, the provider is just externally
+throttled right now. `Q` tiers also carry `quota_wait_seconds` (how
+much longer opencode's own next attempt would have needed) and
+`status_events` (every status transition observed while waiting).
 
 **Console output while a run is in progress:** each tier prints one
 flushed dot per HTTP round-trip (session create, setup message, probe

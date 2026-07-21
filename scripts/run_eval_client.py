@@ -59,6 +59,7 @@ specific branch remains unverified against real tool-call output.
 import json
 import os
 import sys
+import threading
 import time
 import http.client
 import urllib.error
@@ -68,6 +69,29 @@ from pathlib import Path
 TASK_SUITE_DIR = Path("/task-suite")
 RESULTS_DIR = Path("/results")
 TOOLS_DIR = Path("/opt/harness/tools")
+
+# Quota/rate-limit awareness config -- all tunable via env var, no
+# hardcoded provider-specific knowledge (NVIDIA vs Zen vs anything
+# else). opencode's own retry.ts already translates provider-specific
+# behavior (real Retry-After headers, provider error-body patterns)
+# into a single "next attempt at this timestamp" signal via
+# GET /session/status -- this harness only needs ONE threshold applied
+# uniformly to that signal, not per-provider branching.
+QUOTA_WAIT_THRESHOLD_S = float(os.environ.get("OPENCODE_QUOTA_WAIT_THRESHOLD_S", "3000"))  # 50 min default
+STATUS_POLL_INTERVAL_S = float(os.environ.get("OPENCODE_STATUS_POLL_INTERVAL_S", "5"))
+
+
+class _QuotaExhausted(Exception):
+    """Internal signal, not a real error -- raised inside run_category()
+    to unify the "gave up waiting on a quota/rate-limit stall" path
+    with the existing try/except structure, rather than threading an
+    extra return-value check through both call sites. Never escapes
+    run_category() itself.
+    """
+    def __init__(self, quota_info: dict, events: list[dict]):
+        self.quota_info = quota_info
+        self.events = events
+        super().__init__(quota_info.get("message", "quota exhausted"))
 
 
 def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
@@ -138,12 +162,186 @@ def create_session(base_url: str) -> str:
     return session_id
 
 
+def http_get(base_url: str, path: str, timeout: int = 10) -> dict:
+    """Mirrors http_post's full exception-to-RuntimeError translation --
+    same reasoning applies identically to GET requests (status/message
+    fetches), just without a request body. Kept as a near-duplicate of
+    http_post rather than a shared helper with a method= parameter:
+    the two already diverge slightly (POST needs a body/Content-Type,
+    GET's error branches don't need the HTTPError body-reading dance
+    the same way) and forcing them into one function would trade a
+    small amount of duplication for a worse abstraction.
+    """
+    url = f"{base_url.rstrip('/')}{path}"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GET {path} failed: HTTP {e.code}: {body_text[:500]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GET {path} failed to reach {url}: {e.reason}") from e
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise RuntimeError(f"GET {path} returned a response that wasn't valid JSON/UTF-8: {e}") from e
+    except TimeoutError as e:
+        raise RuntimeError(f"GET {path} timed out after {timeout}s waiting for a response from {url}") from e
+    except http.client.HTTPException as e:
+        raise RuntimeError(f"GET {path} failed: HTTP protocol error: {e}") from e
+    except OSError as e:
+        raise RuntimeError(f"GET {path} failed: network error: {e}") from e
+
+
+def get_session_status(base_url: str, session_id: str) -> dict:
+    """GET /session/status returns a map of ALL sessions' statuses, not
+    just ours (confirmed from source: session/status.ts's underlying
+    store is keyed by sessionID across the whole server) -- this reads
+    just our session's entry out of that map.
+
+    Defaults to {"type": "idle"} if our session isn't in the map at
+    all, matching opencode's own default exactly (source:
+    `data.get(sessionID) ?? { type: "idle" as const }`) -- a session
+    that's never been busy/retrying (or one the server has no record
+    of, e.g. right after creation before any message) is legitimately
+    idle, not an error condition.
+
+    Real status.type values, confirmed from source (session/status.ts,
+    session/run-state.ts, session/processor.ts) -- NOT guessed, no
+    other values exist in the codebase: "idle", "busy", "retry". The
+    "retry" case additionally carries attempt/message/action/next
+    (all from session/retry.ts's SessionRetry.policy -- see
+    quota_aware_send_message()'s docstring for what these mean).
+    """
+    statuses = http_get(base_url, "/session/status")
+    return statuses.get(session_id, {"type": "idle"})
+
+
+def abort_session(base_url: str, session_id: str) -> bool:
+    """POST /session/{id}/abort -- confirmed from source
+    (server/routes/.../groups/session.ts): "Abort an active session
+    and stop any ongoing AI processing or command execution." This is
+    the safe way to give up on a stuck/quota-exhausted attempt --
+    NEVER just re-POST a new message to the same session while the
+    original might still be processing server-side (opencode's own
+    retry loop, confirmed unbounded by attempt count or wall-clock
+    time in session/retry.ts, is decoupled from whether our client
+    connection is even still attached -- a second POST would risk a
+    genuine duplicate turn in the transcript, not just a wasted retry).
+    """
+    result = http_post(base_url, f"/session/{session_id}/abort", {})
+    return bool(result)
+
+
 def send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str) -> dict:
     body = {
         "model": {"providerID": provider, "modelID": model_id},
         "parts": [{"type": "text", "text": text}],
     }
     return http_post(base_url, f"/session/{session_id}/message", body)
+
+
+def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
+                              quota_wait_threshold_s: float = QUOTA_WAIT_THRESHOLD_S,
+                              poll_interval_s: float = STATUS_POLL_INTERVAL_S) -> tuple[dict | None, dict | None, list[dict]]:
+    """Wraps send_message() with concurrent, non-blocking status
+    awareness -- NOT a retry mechanism itself, since opencode already
+    has one (session/retry.ts, confirmed unbounded by attempt count or
+    wall-clock time, confirmed no config-level cap exists anywhere in
+    the codebase). This exists to detect when that internal retry has
+    stalled beyond a reasonable wait (a real quota ceiling: OpenCode
+    Zen/Go daily limit or balance exceeded, a provider rate-limit
+    cooldown, etc.) and give up CLEANLY -- abort first, never a second
+    blind POST to the same session, which could duplicate a turn if
+    the original attempt is still processing server-side.
+
+    Mechanism: send_message() runs in a background thread (its own
+    http_post call blocks exactly as before, unchanged). The MAIN
+    thread concurrently polls GET /session/status every
+    poll_interval_s -- this is a cheap, separate HTTP call, not
+    related to the blocking POST at all. If status.type == "retry"
+    and its "next" field (an absolute ms-epoch timestamp for
+    opencode's own next attempt -- confirmed from session/retry.ts:
+    `next: now + wait`) implies a wait longer than
+    quota_wait_threshold_s, this calls abort_session() and returns a
+    quota-exhaustion signal instead of continuing to wait.
+
+    Returns (result, quota_info, events):
+      - Normal completion: (SessionV1.WithParts dict, None, events)
+      - Quota-exhaustion bailout: (None, {"reason": ..., "wait_seconds":
+        ..., "message": ...}, events)
+      - A real error (network/HTTP/etc.) from send_message() itself
+        propagates as a raised RuntimeError, same as calling
+        send_message() directly -- this function only adds NEW
+        behavior for the quota case, it doesn't change error handling
+        for anything that already worked.
+    events is every distinct status snapshot observed while polling
+    (timestamp + full status dict) -- the per-tier "what actually
+    happened" log, not just the terminal outcome. A tier that passed
+    but needed several internal opencode retries against a rate limit
+    looks different in this list than one that passed cleanly on the
+    first attempt, even though both end up PASS in the tier record.
+    """
+    result_holder: dict = {}
+    exception_holder: dict = {}
+    done_event = threading.Event()
+    events: list[dict] = []
+
+    def worker():
+        try:
+            result_holder["value"] = send_message(base_url, session_id, provider, model_id, text)
+        except Exception as e:  # noqa: BLE001 -- deliberately broad, re-raised verbatim below
+            exception_holder["value"] = e
+        finally:
+            done_event.set()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    last_status_type = None
+    while True:
+        if done_event.wait(timeout=poll_interval_s):
+            break  # worker finished (success or exception) during this poll window
+
+        try:
+            status = get_session_status(base_url, session_id)
+        except RuntimeError:
+            # Status check itself failed transiently (e.g. a momentary
+            # network blip on OUR polling connection, unrelated to the
+            # actual message request) -- don't act on missing
+            # information, just try again next interval. The worker
+            # thread's own connection is entirely separate and
+            # unaffected by this.
+            continue
+
+        status_type = status.get("type")
+        if status_type != last_status_type or status_type == "retry":
+            events.append({"timestamp": time.time(), **status})
+            last_status_type = status_type
+
+        if status_type == "retry":
+            next_ms = status.get("next")
+            if next_ms is not None:
+                wait_s = (next_ms / 1000.0) - time.time()
+                if wait_s > quota_wait_threshold_s:
+                    try:
+                        abort_session(base_url, session_id)
+                    except RuntimeError:
+                        pass  # best-effort -- we're bailing on this tier regardless
+                    # Give the worker thread a brief window to unwind
+                    # after the abort (its blocking POST should now
+                    # return, likely with an error) rather than leaving
+                    # it dangling as an orphaned daemon thread forever.
+                    done_event.wait(timeout=poll_interval_s)
+                    action = status.get("action") or {}
+                    return None, {
+                        "reason": action.get("reason", "unknown"),
+                        "wait_seconds": wait_s,
+                        "message": status.get("message", ""),
+                    }, events
+
+    if "value" in exception_holder:
+        raise exception_holder["value"]
+    return result_holder.get("value"), None, events
 
 
 def extract_reply(response: dict) -> tuple[str, list[dict]]:
@@ -242,7 +440,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
     category_dir.mkdir(parents=True, exist_ok=True)
     ceiling = 0
     tier_results = []
-    summary_dots = []  # one char per tier: . pass / F fail / R review / E error -- printed as a compact row at the end of this category, and again in main()'s final grid
+    summary_dots = []  # one char per tier: . pass / F fail / R review / E error / Q quota-exhausted -- printed as a compact row at the end of this category, and again in main()'s final grid
 
     for tier_def in category["tiers"]:
         tier_num = tier_def["tier"]
@@ -257,12 +455,44 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         try:
             session_id = create_session(base_url)
             print(".", end="", file=sys.stderr, flush=True)
-            setup_resp = send_message(base_url, session_id, provider, model_id, setup_message)
+            setup_resp, quota_info, setup_events = quota_aware_send_message(
+                base_url, session_id, provider, model_id, setup_message)
+            if quota_info is not None:
+                raise _QuotaExhausted(quota_info, setup_events)
             print(".", end="", file=sys.stderr, flush=True)
             setup_text, setup_tools = extract_reply(setup_resp)
-            probe_resp = send_message(base_url, session_id, provider, model_id, tier_def["prompt"])
+            probe_resp, quota_info, probe_events = quota_aware_send_message(
+                base_url, session_id, provider, model_id, tier_def["prompt"])
+            if quota_info is not None:
+                raise _QuotaExhausted(quota_info, setup_events + probe_events)
             print(".", end="", file=sys.stderr, flush=True)
             probe_text, probe_tools = extract_reply(probe_resp)
+        except _QuotaExhausted as e:
+            # Distinct from a generic RuntimeError below on purpose:
+            # this means opencode's OWN retry loop (session/retry.ts,
+            # confirmed unbounded) was still legitimately working when
+            # we gave up waiting -- nothing is wrong with the model or
+            # this harness, the provider is just rate-limited/quota-
+            # exhausted right now. A human reviewing results later
+            # needs to be able to tell "the model failed the test"
+            # (F) apart from "we never got a real answer to judge"
+            # (E) apart from "this is just externally throttled, try
+            # again later" (Q) -- conflating any of these into the
+            # same symbol would make the report actively misleading.
+            wait_min = e.quota_info["wait_seconds"] / 60
+            print(f" -> QUOTA: {e.quota_info['reason']} (next attempt in ~{wait_min:.0f}min, gave up waiting) {e.quota_info['message']}",
+                  file=sys.stderr)
+            summary_dots.append("Q")
+            tier_results.append({
+                "tier": tier_num, "source": tier_def["source"], "passed": False,
+                "needs_manual_review": False,
+                "reason": f"quota/rate-limit exhausted: {e.quota_info['reason']} -- {e.quota_info['message']}",
+                "findings": {}, "session_id": session_id,
+                "quota_wait_seconds": e.quota_info["wait_seconds"],
+                "status_events": e.events,
+                "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            break
         except RuntimeError as e:
             # Previously uncaught here -- one tier's HTTP/model error
             # (e.g. ProviderModelNotFoundError surfaced as an HTTP 500)
@@ -298,6 +528,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
             "needs_manual_review": needs_review, "reason": reason,
             "findings": scan_result.get("category_counts", {}),
             "session_id": session_id,
+            "status_events": setup_events + probe_events,
             "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         (category_dir / f"tier{tier_num}.json").write_text(json.dumps(tier_record, indent=2))
@@ -363,6 +594,9 @@ def main() -> int:
         if last_tier and not last_tier["passed"]:
             if last_tier.get("needs_manual_review"):
                 note = " [stopped: NEEDS MANUAL REVIEW]"
+            elif last_tier.get("reason", "").startswith("quota/rate-limit exhausted"):
+                wait_min = last_tier.get("quota_wait_seconds", 0) / 60
+                note = f" [stopped: QUOTA -- next opencode attempt in ~{wait_min:.0f}min, gave up waiting]"
             elif last_tier.get("reason", "").startswith("HTTP/request error"):
                 note = " [stopped: ERROR]"
             else:
