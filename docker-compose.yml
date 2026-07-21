@@ -46,6 +46,14 @@ x-local-ollama-defaults: &local-ollama-defaults
   volumes:
     - ./task-suite:/task-suite:ro
     - ./results:/results
+    # Read-only: only the server process writes here, client
+    # containers only read it to capture a run's server.log artifact
+    # (see run_eval_client.py's main() -- copies the log at the end of
+    # a run). Shared across ALL clients hitting this one persistent
+    # server, so it reflects everything the server has logged, not
+    # just this specific eval-client invocation -- see the code
+    # comment for the concurrent-runs caveat.
+    - opencode-log:/home/harness/.local/share/opencode/log:ro
 
 services:
   # Single, static, persistent opencode server. This is the whole point
@@ -85,6 +93,7 @@ services:
       OPENCODE_OLLAMA_TAGS_URL: "${OPENCODE_OLLAMA_TAGS_URL:-http://host.docker.internal:11434/api/tags}"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - opencode-log:/home/harness/.local/share/opencode/log
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4096/session', timeout=3)"]
@@ -103,6 +112,7 @@ services:
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results:/results
+      - opencode-log:/home/harness/.local/share/opencode/log:ro
     # For a specific model instead of auto-discovery:
     # docker compose run --rm discover python3 /usr/local/bin/discover_and_select_model.py --model zhipu/glm-5.2
 
@@ -137,6 +147,7 @@ services:
       - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results:/results
+      - opencode-log:/home/harness/.local/share/opencode/log:ro
 
   # Local Ollama-backed models. All five share x-local-ollama-defaults
   # and x-local-ollama-env; only OPENCODE_MODEL_ID differs per service.
@@ -172,3 +183,18 @@ services:
     environment:
       <<: *local-ollama-env
       OPENCODE_MODEL_ID: "qwen2.5-coder:7b"
+
+# Shared between server (rw) and every client container (ro) -- lets
+# run_eval_client.py capture opencode's own server-side log as a
+# results artifact (server.log), which has the REAL underlying error
+# (e.g. ProviderModelNotFoundError) behind a generic client-visible
+# HTTP 500 wrapper. NOT a "previously invisible" fix -- --print-logs
+# (entrypoint.sh) already mirrors this to stderr, so `docker logs
+# server` shows it live. What this actually adds: docker logs belongs
+# to the daemon, tied to the server container -- eval/discover have
+# no access to it, and it isn't scoped to any one run. This volume
+# makes it a per-run file artifact instead. Docker-managed (not a
+# host bind-mount) since the log only ever needs to exist inside the
+# container network, never on the host filesystem directly.
+volumes:
+  opencode-log:

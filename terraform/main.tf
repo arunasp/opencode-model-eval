@@ -7,6 +7,20 @@ resource "docker_network" "eval_net" {
   name = "opencode-model-eval-net"
 }
 
+# Shared between server (rw) and every client container (ro) -- lets
+# run_eval_client.py capture opencode's own server-side log as a
+# results artifact (server.log), which has the REAL underlying error
+# (e.g. ProviderModelNotFoundError) behind a generic client-visible
+# HTTP 500 wrapper. NOT a "previously invisible" fix -- --print-logs
+# (entrypoint.sh) already mirrors this to stderr, so `docker logs
+# server` shows it live. What this actually adds: docker logs belongs
+# to the daemon, tied to the server container -- eval/discover have
+# no access to it, and it isn't scoped to any one run. This volume
+# makes it a per-run file artifact instead.
+resource "docker_volume" "opencode_log" {
+  name = "opencode-model-eval-log"
+}
+
 # --- auth-data/auth.json precondition -----------------------------------
 # Hit live on Cyberdyne (2026-07-21): every docker_container resource
 # below bind-mounts this same host path. Docker's bind-mount behavior
@@ -158,6 +172,12 @@ resource "docker_container" "server" {
     container_path = "/home/harness/.local/share/opencode/auth.json"
     read_only      = true
   }
+
+  volumes {
+    volume_name    = docker_volume.opencode_log.name
+    container_path = "/home/harness/.local/share/opencode/log"
+    # No read_only -- server is the only writer, needs it read-write.
+  }
 }
 
 # --- Model discovery -----------------------------------------------------
@@ -186,6 +206,12 @@ resource "docker_container" "discover" {
     host_path      = abspath("${var.harness_root}/results/discovered")
     container_path = "/results"
     read_only      = false
+  }
+
+  volumes {
+    volume_name    = docker_volume.opencode_log.name
+    container_path = "/home/harness/.local/share/opencode/log"
+    read_only      = true
   }
 }
 
@@ -234,6 +260,12 @@ resource "docker_container" "eval" {
     host_path      = abspath("${var.harness_root}/results")
     container_path = "/results"
     read_only      = false
+  }
+
+  volumes {
+    volume_name    = docker_volume.opencode_log.name
+    container_path = "/home/harness/.local/share/opencode/log"
+    read_only      = true
   }
 
   depends_on = [docker_container.server]
@@ -290,5 +322,11 @@ resource "docker_container" "local_ollama" {
     host_path      = abspath("${var.harness_root}/results")
     container_path = "/results"
     read_only      = false
+  }
+
+  volumes {
+    volume_name    = docker_volume.opencode_log.name
+    container_path = "/home/harness/.local/share/opencode/log"
+    read_only      = true
   }
 }

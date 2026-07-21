@@ -58,6 +58,7 @@ specific branch remains unverified against real tool-call output.
 """
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -69,6 +70,12 @@ from pathlib import Path
 TASK_SUITE_DIR = Path("/task-suite")
 RESULTS_DIR = Path("/results")
 TOOLS_DIR = Path("/opt/harness/tools")
+# Shared, read-only mount (docker-compose.yml/terraform's opencode_log
+# volume) -- opencode's OWN log file, the same one previously only
+# reachable via `docker exec ... cat`. Confirmed path from actual
+# container inspection this session: opencode.log specifically, not a
+# directory of rotated files (at least as of the version tested).
+OPENCODE_LOG_PATH = Path("/home/harness/.local/share/opencode/log/opencode.log")
 
 # Quota/rate-limit awareness config -- all tunable via env var, no
 # hardcoded provider-specific knowledge (NVIDIA vs Zen vs anything
@@ -586,6 +593,40 @@ def main() -> int:
         )
 
     (results_dir / "report.json").write_text(json.dumps(report, indent=2))
+
+    # Capture opencode's own server-side log as an artifact -- it has
+    # the REAL underlying error (e.g. ProviderModelNotFoundError)
+    # behind a generic client-visible HTTP 500 wrapper. NOT a
+    # "previously invisible" fix -- --print-logs (entrypoint.sh)
+    # already mirrors this to stderr, so `docker logs server` shows it
+    # live. What this actually adds: docker logs belongs to the
+    # daemon, tied to the server container specifically -- this
+    # (eval/discover) container has no access to it at all, and it
+    # isn't scoped to any one run. This makes it a per-run file
+    # artifact living alongside report.json instead.
+    #
+    # Scope caveat, stated plainly rather than silently: this is the
+    # server's WHOLE current log file, not filtered to this run's
+    # session IDs -- correct and simple for the current single-run-at-
+    # a-time usage (one docker-compose run/terraform apply at a time
+    # against the one persistent server), but if multiple eval-client
+    # containers ever run concurrently against the same server, this
+    # snapshot would include their interleaved log lines too, not just
+    # this run's. Not an issue for how this harness is actually used
+    # today; worth revisiting if concurrent runs become a real pattern.
+    try:
+        if OPENCODE_LOG_PATH.exists():
+            shutil.copy2(OPENCODE_LOG_PATH, results_dir / "server.log")
+        else:
+            print(f"[eval-client] NOTE: {OPENCODE_LOG_PATH} not found -- "
+                  "server.log artifact not captured. Confirm the opencode-log "
+                  "volume is mounted (see docker-compose.yml/terraform).",
+                  file=sys.stderr)
+    except OSError as e:
+        # Never let a log-capture failure take down an otherwise-
+        # successful run -- this is a nice-to-have artifact, not
+        # something the eval run's actual correctness depends on.
+        print(f"[eval-client] NOTE: failed to capture server.log: {e}", file=sys.stderr)
 
     print(f"\n=== Summary (model: {provider}/{model_id}) ===", file=sys.stderr)
     for cat_report in report["categories"]:

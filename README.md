@@ -279,6 +279,57 @@ against a real run before you trust the pipeline:
     behavior against an actual Zen/NVIDIA rate-limit or quota-exceeded
     response -- would need live credentials in a genuinely throttled
     state to trigger, which this sandbox doesn't have.
+13. **Every run now captures opencode's own server-side log as an
+    artifact (`server.log`, alongside `report.json`).** Prompted
+    directly by a real result: a client-visible HTTP 500
+    (`"UnknownError"`/`"Unexpected server error"`) told you almost
+    nothing, while the actual named error (e.g.
+    `ProviderModelNotFoundError`) only ever existed in opencode's own
+    log. **Not** a "previously invisible" fix -- `--print-logs`
+    (caveat above) already mirrors this same log to stderr, so
+    `docker logs opencode-model-eval-server` shows it live. What's
+    actually missing without this: `docker logs` output belongs to
+    the Docker daemon, tied to the `server` container specifically --
+    the separate `eval`/`discover` containers have no access to it at
+    all (short of the Docker socket, a different and more invasive
+    mechanism), and it isn't scoped to any one run. Run five different
+    models against the same persistent server and `docker logs server`
+    gives you all five runs' history interleaved, with nothing tied
+    to a specific `results/<model>/` directory. This closes that: a
+    new Docker-managed volume (`opencode-log`, `docker-compose.yml`'s
+    top-level `volumes:` / terraform's `docker_volume.opencode_log`)
+    is mounted read-write on `server` and read-only on every client
+    container (`discover`/`eval`/all five `local_ollama` instances).
+    `run_eval_client.py`'s `main()` copies it into each run's own
+    results directory at the end, non-fatally (a capture failure
+    prints a `NOTE` and the run still completes/writes `report.json`
+    -- this is a nice-to-have artifact, not something the run's
+    correctness depends on).
+
+    **Scope caveat, stated plainly:** this captures the server's
+    WHOLE current log file, not filtered to this run's specific
+    session IDs -- correct and simple for today's actual usage (one
+    `docker-compose run`/`terraform apply` at a time against the one
+    persistent server), but if multiple eval-client containers ever
+    run concurrently, this snapshot would include their interleaved
+    log lines too, not just this run's. Not an issue today; worth
+    revisiting if concurrent runs become a real pattern.
+
+    Verified end-to-end through the REAL `main()` code path (not a
+    reimplementation of the copy logic in isolation): a full fake run
+    with a real log file present correctly copies it with matching
+    content; a full fake run with the log file genuinely absent
+    correctly prints a `NOTE`, does NOT create `server.log`, and still
+    completes normally with `report.json` intact. Docker/Terraform
+    volume wiring confirmed via `docker-compose config` (real 1.29.2,
+    not just YAML parse) showing the correct `rw`/`ro` mount on each
+    of the 4 distinct service/resource shapes, and HCL2 parsing clean
+    across all 4 `docker_volume.opencode_log.name` references. NOT
+    verified: an actual multi-container Docker run confirming the
+    volume genuinely shares data between separate containers in
+    practice (no Docker daemon in this environment) -- the config is
+    correct on paper per the provider's own documented syntax, but
+    this specific mechanism hasn't been observed working live yet.
 
 ## Setup
 
