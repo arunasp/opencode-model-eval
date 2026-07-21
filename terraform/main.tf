@@ -7,6 +7,38 @@ resource "docker_network" "eval_net" {
   name = "opencode-model-eval-net"
 }
 
+# --- auth-data/auth.json precondition -----------------------------------
+# Hit live on Cyberdyne (2026-07-21): every docker_container resource
+# below bind-mounts this same host path. Docker's bind-mount behavior
+# for a source path that doesn't exist yet is to silently create an
+# EMPTY DIRECTORY at that path rather than erroring -- so the file
+# needs to exist as a real file BEFORE the first apply that creates any
+# of the 12 containers mounting it, not after. All 12 hit the identical
+# "credentials not found" failure the first time this ran, not just
+# server -- entrypoint.sh's credential check runs before mode dispatch.
+#
+# fileexists() is documented to hard-error (not return false) if the
+# path is a directory rather than missing entirely -- exploiting that
+# here rather than working around it: if the phantom-directory bug
+# ever recurs, this locals block itself fails plan/apply immediately
+# with Terraform's own clear "X is a directory, not a file" message,
+# before any container gets created. If the file is genuinely just
+# absent (the more common first-run case), fileexists() returns false
+# cleanly and the precondition below fires our own actionable message.
+locals {
+  auth_file_path   = "${var.harness_root}/auth-data/auth.json"
+  auth_file_exists = fileexists(local.auth_file_path)
+}
+
+resource "terraform_data" "auth_file_check" {
+  lifecycle {
+    precondition {
+      condition     = local.auth_file_exists
+      error_message = "auth-data/auth.json not found at ${local.auth_file_path}. Run 'bash scripts/extract-opencode-key.sh' (no args) to list your available provider keys, then 'bash scripts/extract-opencode-key.sh <key1> <key2> ...' to generate the real file BEFORE running apply -- this must exist before any container that mounts it is created, not after."
+    }
+  }
+}
+
 # --- Server image + container -----------------------------------------
 # Deliberately a SEPARATE, LIGHTER image from docker_image.harness below
 # -- server only needs the Dockerfile's `server` target (python3 +
@@ -69,6 +101,7 @@ resource "docker_container" "server" {
   name  = "opencode-model-eval-server"
   image = docker_image.server.image_id
   command = ["serve"]
+  depends_on = [terraform_data.auth_file_check]
 
   # This IS a persistent service now, unlike the old per-model batch
   # containers -- must_run = true reflects that a stopped server is
@@ -115,6 +148,7 @@ resource "docker_container" "server" {
 resource "docker_container" "discover" {
   name  = "opencode-model-eval-discover"
   image = docker_image.harness.image_id
+  depends_on = [terraform_data.auth_file_check]
 
   entrypoint = ["python3", "/usr/local/bin/discover_and_select_model.py"]
   # To select a specific model instead of running discovery:
@@ -148,6 +182,7 @@ resource "docker_container" "eval" {
 
   name  = "opencode-model-eval-eval-${each.key}"
   image = docker_image.harness.image_id
+  depends_on = [terraform_data.auth_file_check]
 
   command = ["eval-client"]
 
@@ -201,6 +236,7 @@ resource "docker_container" "local_ollama" {
 
   name  = "opencode-model-eval-${each.key}"
   image = docker_image.harness.image_id
+  depends_on = [terraform_data.auth_file_check]
 
   command = ["eval-client"]
 
