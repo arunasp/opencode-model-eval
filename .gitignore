@@ -12,6 +12,14 @@ terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/*.tfvars
 terraform/crash.log
+terraform/*.plan
+terraform/*-plan.log
+
+# One-time patch-delivery scripts (apply-*.sh) and build logs -- these
+# are session artifacts, not source; each is regenerated fresh per
+# patch/build rather than reused, so tracking them just adds churn.
+/apply-*.sh
+/docker-build.log
 
 # OS/editor cruft
 .DS_Store
