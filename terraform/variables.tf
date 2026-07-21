@@ -52,24 +52,3 @@ variable "local_ollama_models" {
   }
 }
 
-variable "models" {
-  description = "Map of model slug -> {provider, id}. Every entry shares the SAME docker_image.harness now (no per-model build) -- adding a model here costs zero rebuild, just a new docker_container.eval[key] with different runtime env vars. `hy3` was verified against the live OpenCode Zen API (corrected from opencode-zen/hy3 to opencode/hy3-free -- the docs page omitted hy3-free while the live API listed it). `deepseek-v4-pro` and `glm-5-2` are still unverified guesses -- confirm against a live `opencode models --refresh` listing before relying on their results."
-  type = map(object({
-    provider = string
-    id       = string
-  }))
-  default = {
-    "hy3" = {
-      provider = "opencode"
-      id       = "hy3-free"
-    }
-    "deepseek-v4-pro" = {
-      provider = "deepseek"
-      id       = "deepseek-v4-pro"
-    }
-    "glm-5-2" = {
-      provider = "zhipu"
-      id       = "glm-5.2"
-    }
-  }
-}

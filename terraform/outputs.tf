@@ -1,8 +1,7 @@
 output "next_step" {
-  description = "Run this after apply to tail the server and each model's eval run as it completes."
+  description = "Run this after apply to tail the server, then use scripts/tf-select-and-run-eval.sh (or `make tf-eval MODEL=...`) for a cloud eval run -- there's no static per-model container to tail anymore, see docker_container.discover's comment in main.tf."
   value = join("\n", concat(
     ["docker logs -f ${docker_container.server.name}   # persistent opencode serve"],
-    [for k, c in docker_container.eval : "docker logs -f ${c.name}   # ${var.models[k].provider}/${var.models[k].id}"],
     [for k, c in docker_container.local_ollama : "docker logs -f ${c.name}   # local/ollama/${var.local_ollama_models[k]}"]
   ))
 }

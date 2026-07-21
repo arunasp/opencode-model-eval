@@ -186,6 +186,24 @@ resource "docker_container" "server" {
 # --- Model discovery -----------------------------------------------------
 # Standalone -- `opencode models --verbose` doesn't require a running
 # serve instance, so this doesn't depend on docker_container.server.
+#
+# This is now the ONLY path to a cloud eval run, static or otherwise --
+# the fixed matrix (var.models / docker_container.eval, one container
+# per hardcoded provider/model pair) is gone. It covered exactly 3
+# entries, one of which (hy3) was confirmed broken and the other two
+# (deepseek-v4-pro, glm-5-2) had no matching provider credential in
+# auth.json at all (confirmed live: only xai/groq/opencode/google/
+# opencode-go/openrouter/huggingface/nvidia/poolside are configured on
+# Cyberdyne) -- a static list just goes stale the moment the account's
+# actual provider set changes, the same category of problem
+# discover_local_ollama_models.py already solves for local models by
+# querying live instead of hardcoding. scripts/tf-select-and-run-eval.sh
+# is the new entry point: runs this container to resolve a
+# provider/model (either live discovery or a direct --model override),
+# then runs a one-off eval-client container against that result --
+# mirroring how scripts/select-and-run-eval.sh's `eval` target already
+# works on the Compose side (a generic runnable target, not one
+# resource per model).
 resource "docker_container" "discover" {
   name  = "opencode-model-eval-discover"
   image = docker_image.harness.image_id
@@ -218,71 +236,17 @@ resource "docker_container" "discover" {
   }
 }
 
-# --- Eval runs -----------------------------------------------------------
-# One container per model in var.models, but NO per-model image -- every
-# entry shares docker_image.harness and only differs by runtime env vars
-# (OPENCODE_MODEL_PROVIDER/ID), talking to the one server container over
-# the shared network. This is the concrete difference from the old
-# design: adding a model here costs zero rebuild.
-resource "docker_container" "eval" {
-  for_each = var.models
-
-  name  = "opencode-model-eval-eval-${each.key}"
-  image = docker_image.harness.image_id
-  depends_on = [terraform_data.auth_file_check, docker_container.server]
-
-  command = ["eval-client"]
-
-  must_run = false
-  attach   = false
-  rm       = false
-
-  networks_advanced {
-    name = docker_network.eval_net.name
-  }
-
-  env = [
-    "OPENCODE_SERVER_URL=http://server:4096",
-    "OPENCODE_MODEL_PROVIDER=${each.value.provider}",
-    "OPENCODE_MODEL_ID=${each.value.id}",
-  ]
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/task-suite")
-    container_path = "/task-suite"
-    read_only      = true
-  }
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/auth-data/auth.json")
-    container_path = "/home/harness/.local/share/opencode/auth.json"
-    read_only      = true
-  }
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/results")
-    container_path = "/results"
-    read_only      = false
-  }
-
-  volumes {
-    volume_name    = docker_volume.opencode_log.name
-    container_path = "/home/harness/.local/share/opencode/log"
-    read_only      = true
-  }
-
-  # NOTE: Terraform's depends_on, like Compose's, only orders container
-  # creation -- it does not wait for the server to actually be listening.
-  # entrypoint.sh's eval-client mode polls before running, same gap
-  # covered the same way as in docker-compose.yml.
-}
-
 # --- Local models (Ollama-backed) ---------------------------------------
 # Still needs network_mode = "host" to reach a host-run Ollama instance,
 # which the shared eval_net doesn't provide -- kept as its own resource
-# type for that reason. for_each over var.local_ollama_models, same
-# pattern as docker_container.eval above: one container per model, all
-# sharing docker_image.harness, zero rebuild cost to add a model here.
+# type for that reason. for_each over var.local_ollama_models: one
+# container per model, all sharing docker_image.harness, zero rebuild
+# cost to add a model here. Unlike cloud models (now discovery-only,
+# see docker_container.discover above), local models are still a
+# for_each over a fixed variable -- they're not a stale-goes-stale
+# static guess the way the old cloud matrix was, since
+# discover_local_ollama_models.py already re-derives what's actually
+# installed at container startup independent of this list.
 resource "docker_container" "local_ollama" {
   for_each = var.local_ollama_models
 
