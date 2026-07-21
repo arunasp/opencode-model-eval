@@ -82,6 +82,27 @@ def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
         raise RuntimeError(f"POST {path} failed: HTTP {e.code}: {body_text[:500]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"POST {path} failed to reach {url}: {e.reason}") from e
+    except TimeoutError as e:
+        # Hit live: the connection succeeds (request sent fine) but the
+        # server never finishes sending a response within `timeout`
+        # seconds -- raised deep inside http.client.getresponse(), NOT
+        # a urllib.error.URLError subclass, so it previously sailed
+        # straight past both except clauses above as a raw traceback
+        # that crashed the entire eval run -- confirmed the run_category
+        # try/except RuntimeError (added alongside this file's progress
+        # dots) could not have caught this either, since http_post never
+        # translated it to RuntimeError in the first place. Must come
+        # before the `except OSError` below -- TimeoutError IS an
+        # OSError subclass, so ordering matters (first matching except
+        # wins).
+        raise RuntimeError(f"POST {path} timed out after {timeout}s waiting for a response from {url}") from e
+    except OSError as e:
+        # Catch-all for other socket-level failures that also don't
+        # route through urllib.error (connection reset, broken pipe,
+        # etc.) -- same reasoning as TimeoutError above: every
+        # network-layer failure becomes a RuntimeError, which callers
+        # (run_category's per-tier catch) already know how to handle.
+        raise RuntimeError(f"POST {path} failed: network error: {e}") from e
 
 
 def create_session(base_url: str) -> str:
