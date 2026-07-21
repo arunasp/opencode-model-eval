@@ -17,24 +17,42 @@ resource "docker_network" "eval_net" {
 # "credentials not found" failure the first time this ran, not just
 # server -- entrypoint.sh's credential check runs before mode dispatch.
 #
+# data.external.auth_keys runs extract-opencode-key.sh for real, via
+# scripts/tf-extract-auth-keys.sh -- but ONLY that wrapper's stdout
+# (a bare {"status":"ok","keys_extracted":"..."} confirmation) ever
+# reaches Terraform, and stdout is what data "external" stores in
+# state (confirmed against hashicorp/external's own docs: "All output
+# values are stored in the Terraform state file"). The wrapper never
+# prints the real key material -- extract-opencode-key.sh writes
+# directly to auth-data/auth.json on disk, and this data source only
+# checks its exit code. Provider list derived from var.models (not
+# hardcoded a second time) so it can't drift from the actual matrix.
+#
 # fileexists() is documented to hard-error (not return false) if the
-# path is a directory rather than missing entirely -- exploiting that
-# here rather than working around it: if the phantom-directory bug
-# ever recurs, this locals block itself fails plan/apply immediately
-# with Terraform's own clear "X is a directory, not a file" message,
-# before any container gets created. If the file is genuinely just
-# absent (the more common first-run case), fileexists() returns false
-# cleanly and the precondition below fires our own actionable message.
+# path is a directory rather than missing entirely -- kept as a
+# defense-in-depth backstop after extraction: if the phantom-directory
+# bug ever recurs (e.g. extraction ran but something else clobbered
+# the path afterward), this locals block itself fails plan/apply
+# immediately with Terraform's own clear "X is a directory, not a
+# file" message, before any container gets created.
+data "external" "auth_keys" {
+  program = ["bash", "${path.module}/../scripts/tf-extract-auth-keys.sh"]
+  query = {
+    keys = join(",", distinct([for m in var.models : m.provider]))
+  }
+}
+
 locals {
   auth_file_path   = "${var.harness_root}/auth-data/auth.json"
   auth_file_exists = fileexists(local.auth_file_path)
 }
 
 resource "terraform_data" "auth_file_check" {
+  depends_on = [data.external.auth_keys]
   lifecycle {
     precondition {
       condition     = local.auth_file_exists
-      error_message = "auth-data/auth.json not found at ${local.auth_file_path}. Run 'bash scripts/extract-opencode-key.sh' (no args) to list your available provider keys, then 'bash scripts/extract-opencode-key.sh <key1> <key2> ...' to generate the real file BEFORE running apply -- this must exist before any container that mounts it is created, not after."
+      error_message = "auth-data/auth.json not found at ${local.auth_file_path} even after extraction ran. Check data.external.auth_keys's output above, or run 'bash scripts/extract-opencode-key.sh' manually to see the real error."
     }
   }
 }

@@ -5,6 +5,10 @@ terraform {
       source  = "kreuzwerker/docker"
       version = "~> 4.5"
     }
+    external = {
+      source  = "hashicorp/external"
+      version = "~> 2.3"
+    }
   }
 }
 

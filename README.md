@@ -171,6 +171,39 @@ against a real run before you trust the pipeline:
    verified: an actual `docker-compose build server` against the new
    light target (no Docker daemon here) -- this is the next real test
    to run.
+10. **`auth-data/auth.json` is now auto-extracted by Terraform, with a
+    fail-fast check backing it up.** Hit live on Cyberdyne: Docker
+    silently creates an empty directory at a bind-mount source path
+    that doesn't exist yet rather than erroring, so every container
+    that mounts this file (`server`, `discover`, `eval` x3,
+    `local_ollama` x5 -- all 12) hit an identical "credentials not
+    found" failure the first time this ran. `data.external.auth_keys`
+    (terraform/main.tf) now runs `scripts/tf-extract-auth-keys.sh` --
+    a wrapper around `scripts/extract-opencode-key.sh` -- automatically
+    on `plan`/`apply`, deriving the needed provider list from
+    `var.models` rather than a second hardcoded copy. **Security
+    property, verified against `hashicorp/external`'s own docs, not
+    assumed:** "All output values are stored in the Terraform state
+    file" -- so the wrapper is deliberately designed to print ONLY a
+    `{"status":"ok","keys_extracted":"..."}` confirmation to stdout,
+    never real key material; the actual secret write happens entirely
+    inside `extract-opencode-key.sh`, writing straight to
+    `auth-data/auth.json` on disk, never read back into a Terraform
+    value. Verified end-to-end in a sandbox (fake source `auth.json`,
+    real script invocation, confirmed stdout contains no secrets while
+    the real file on disk does) and the `distinct([for m in var.models
+    : m.provider])` expression tested in isolation against real
+    `tofu apply` output, not assumed from HCL familiarity.
+    `terraform_data.auth_file_check`'s `fileexists()`-based
+    precondition (documented to hard-error, not return false, if the
+    path is a directory -- the exact phantom-directory bug) stays as a
+    defense-in-depth backstop after extraction, `depends_on`'d by all
+    four container resource types. NOT verified: a real
+    `terraform apply` against this exact flow on Cyberdyne (would
+    need real opencode credentials present, which this sandbox
+    doesn't have) -- the manual `bash scripts/extract-opencode-key.sh`
+    path documented in Setup below still works unchanged if you'd
+    rather not have Terraform run it automatically.
 
 ## Setup
 
@@ -185,6 +218,13 @@ bash scripts/extract-opencode-key.sh opencode deepseek zhipu      # writes auth-
 
 This runs on the host, outside both Compose and Terraform — key values
 never get read into Terraform state or a Compose env file.
+
+**If you're using the Terraform path**, this now happens automatically
+on `plan`/`apply` via `data.external.auth_keys` (see README caveat
+#10) — the provider list comes from `var.models`, so you don't need to
+run the command above yourself unless you're on the Compose-only path,
+or want to see what's available first. Either way, key values never
+reach Terraform state.
 
 The structured test ladder ships with this repo, populated:
 `task-suite/test_ladder.json` — 9 categories, 25 tiers, escalating
