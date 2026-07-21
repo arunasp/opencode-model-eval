@@ -15,8 +15,16 @@ x-harness-defaults: &harness-defaults
 # Shared env block for every local-model service below (referenced with
 # a nested merge key, not repeated per model) -- everything each local
 # model needs EXCEPT OPENCODE_MODEL_ID, which differs per service.
+# 49604 (not opencode's common 4096-ish default) is deliberate: this is
+# a HOST-published port (Cyberdyne runs Axiom's own separate
+# opencode serve instance too), and 4096 risked colliding with it.
+# Picked from IANA's dynamic/private port range (49152-65535, RFC
+# 6335) specifically to avoid registered-service collisions -- not
+# verified against Axiom's actual chosen port, since that's outside
+# this repo's config. Override via OPENCODE_SERVE_PORT if it still
+# collides with anything: `OPENCODE_SERVE_PORT=<port> docker-compose up`.
 x-local-ollama-env: &local-ollama-env
-  OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-4096}"
+  OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-49604}"
   OPENCODE_MODEL_PROVIDER: local/ollama
 
 x-local-ollama-defaults: &local-ollama-defaults
@@ -55,8 +63,12 @@ services:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
     command: ["serve"]
+    # 49604: this is the HOST-published port -- 4096 (container-internal,
+    # right side) risked colliding with Axiom's own separate opencode
+    # serve instance on the same host. See x-local-ollama-env's comment
+    # above for the full reasoning; same default, same override.
     ports:
-      - "${OPENCODE_SERVE_PORT:-4096}:4096"
+      - "${OPENCODE_SERVE_PORT:-49604}:4096"
     # Linux-only (matches Cyberdyne): routes host.docker.internal to the
     # docker host's bridge gateway, since this container is on the
     # default bridge network, not host mode. host-gateway only reaches

@@ -17,15 +17,15 @@ variable "opencode_ref" {
 }
 
 variable "serve_port" {
-  description = "Host port mapped to the server container's opencode serve port (4096 internal, fixed by this project -- not opencode's own default, which is a random port on 127.0.0.1 only. See entrypoint.sh."
+  description = "Host port mapped to the server container's opencode serve port (4096 internal, fixed by this project -- not opencode's own default, which is a random port on 127.0.0.1 only. See entrypoint.sh. Default changed from 4096 to 49604 -- Cyberdyne also runs Axiom's own separate opencode serve instance, and 4096 risked colliding with it. Picked from IANA's dynamic/private port range (49152-65535, RFC 6335); not verified against Axiom's actual chosen port, since that's outside this repo's config."
   type        = number
-  default     = 4096
+  default     = 49604
 }
 
 variable "local_server_url" {
-  description = "URL local-model eval containers (host networking, no shared-network DNS) use to reach the server container. Defaults to localhost since network_mode=host puts them on the same network namespace as the Docker host."
+  description = "URL local-model eval containers (host networking, no shared-network DNS) use to reach the server container. Defaults to localhost since network_mode=host puts them on the same network namespace as the Docker host. Port must match var.serve_port -- kept as a separate variable rather than interpolated from it because Terraform doesn't allow referencing one variable's value in another variable's default."
   type        = string
-  default     = "http://localhost:4096"
+  default     = "http://localhost:49604"
 }
 
 variable "ollama_base_url" {
