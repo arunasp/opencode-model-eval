@@ -27,20 +27,25 @@ resource "docker_volume" "opencode_log" {
 # for a source path that doesn't exist yet is to silently create an
 # EMPTY DIRECTORY at that path rather than erroring -- so the file
 # needs to exist as a real file BEFORE the first apply that creates any
-# of the 12 containers mounting it, not after. All 12 hit the identical
-# "credentials not found" failure the first time this ran, not just
-# server -- entrypoint.sh's credential check runs before mode dispatch.
+# of the containers mounting it, not after. All containers hit the
+# identical "credentials not found" failure the first time this ran,
+# not just server -- entrypoint.sh's credential check runs before mode
+# dispatch.
 #
-# data.external.auth_keys runs extract-opencode-key.sh for real, via
+# data.external.auth_keys runs extract-opencode-key.sh --all via
 # scripts/tf-extract-auth-keys.sh -- but ONLY that wrapper's stdout
-# (a bare {"status":"ok","keys_extracted":"..."} confirmation) ever
-# reaches Terraform, and stdout is what data "external" stores in
-# state (confirmed against hashicorp/external's own docs: "All output
+# (a bare {"status":"ok","mode":"all"} confirmation) ever reaches
+# Terraform, and stdout is what data "external" stores in state
+# (confirmed against hashicorp/external's own docs: "All output
 # values are stored in the Terraform state file"). The wrapper never
 # prints the real key material -- extract-opencode-key.sh writes
 # directly to auth-data/auth.json on disk, and this data source only
-# checks its exit code. Provider list derived from var.models (not
-# hardcoded a second time) so it can't drift from the actual matrix.
+# checks its exit code.
+#
+# --all, not a provider list, because there's no longer a static model
+# matrix to derive one from (see docker_container.discover below) --
+# which provider a given eval run needs is resolved live via `opencode
+# models --verbose` at run time, not known at auth-scoping time.
 #
 # fileexists() is documented to hard-error (not return false) if the
 # path is a directory rather than missing entirely -- kept as a
@@ -51,9 +56,7 @@ resource "docker_volume" "opencode_log" {
 # file" message, before any container gets created.
 data "external" "auth_keys" {
   program = ["bash", "${path.module}/../scripts/tf-extract-auth-keys.sh"]
-  query = {
-    keys = join(",", distinct([for m in var.models : m.provider]))
-  }
+  query = {}
 }
 
 locals {

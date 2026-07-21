@@ -7,11 +7,20 @@
 # stored in terraform.tfstate in plaintext (confirmed against
 # hashicorp/external's own docs: "All output values are stored in the
 # Terraform state file"). This script must NEVER print real key
-# material to stdout -- only a confirmation that extraction succeeded
-# and which provider keys were included. The actual secret write
-# happens entirely inside extract-opencode-key.sh, writing directly to
-# auth-data/auth.json on disk; this wrapper never reads that file's
-# contents back into a variable, only checks its exit code.
+# material to stdout -- only a confirmation that extraction succeeded.
+# The actual secret write happens entirely inside extract-opencode-key.sh,
+# writing directly to auth-data/auth.json on disk; this wrapper never
+# reads that file's contents back into a variable, only checks its
+# exit code.
+#
+# Always extracts --all now, not a provider list derived from a static
+# model matrix -- there is no such matrix anymore (see
+# terraform/main.tf's docker_container.discover comment). Which
+# provider a given eval run actually needs is resolved live via
+# `opencode models --verbose` at run time, so the auth-scoping step
+# can't know that set in advance; scoping to "every key you currently
+# have configured" is the closest equivalent that still stays narrower
+# than mounting the real, unscoped auth.json.
 #
 # External data source protocol (hashicorp/external provider):
 #   - stdin: JSON object (the `query` block), all values are strings
@@ -24,31 +33,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly EXTRACT_SCRIPT="${SCRIPT_DIR}/extract-opencode-key.sh"
 
-# Read the full query object from stdin, extract the "keys" field
-# (comma-separated provider names, e.g. "opencode,deepseek,zhipu").
-query_json="$(cat)"
-keys_csv="$(echo "${query_json}" | jq -r '.keys // empty')"
-
-if [ -z "${keys_csv}" ]; then
-  echo "tf-extract-auth-keys.sh: query.keys was empty or missing -- expected a comma-separated provider list" >&2
-  exit 1
-fi
+# Read (and discard) the query object -- data "external" requires
+# stdin be consumed even though this wrapper no longer needs any of
+# its fields.
+cat >/dev/null
 
 if [ ! -x "${EXTRACT_SCRIPT}" ]; then
   echo "tf-extract-auth-keys.sh: ${EXTRACT_SCRIPT} not found or not executable" >&2
   exit 1
 fi
 
-# Split on commas into positional args for extract-opencode-key.sh.
-IFS=',' read -r -a keys_array <<< "${keys_csv}"
-
-if ! "${EXTRACT_SCRIPT}" "${keys_array[@]}" >/tmp/tf-extract-auth-keys.stdout.log 2>/tmp/tf-extract-auth-keys.stderr.log; then
-  echo "tf-extract-auth-keys.sh: extract-opencode-key.sh failed for keys [${keys_csv}]. Its stderr:" >&2
+if ! "${EXTRACT_SCRIPT}" --all >/tmp/tf-extract-auth-keys.stdout.log 2>/tmp/tf-extract-auth-keys.stderr.log; then
+  echo "tf-extract-auth-keys.sh: extract-opencode-key.sh --all failed. Its stderr:" >&2
   cat /tmp/tf-extract-auth-keys.stderr.log >&2
   exit 1
 fi
 
 # Confirmation only -- deliberately NOT the file's contents, NOT any
-# key value. keys_csv is provider NAMES ("opencode", "deepseek"), not
-# secrets, safe to echo back and safe to land in state.
-jq -n --arg keys "${keys_csv}" '{"status": "ok", "keys_extracted": $keys}'
+# key value.
+jq -n '{"status": "ok", "mode": "all"}'
