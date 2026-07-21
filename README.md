@@ -148,6 +148,29 @@ against a real run before you trust the pipeline:
    Cyberdyne (unrestricted network) where it should actually pass; if
    it still hangs there, the cause is something other than sandbox
    egress restrictions and needs fresh diagnosis.
+9. **The Dockerfile is now two stages: `server` (light) and `harness`
+   (heavy, extends `server`).** This directly resolves caveats #5 and
+   #6's build failures for the `server` role specifically -- every
+   failure traced during development (spaCy/onnxruntime/click/PEP 668/
+   BuildKit `--chmod`) came from dependencies the `server` role never
+   actually used. `server` now only installs `ca-certificates` +
+   `python3` (no pip packages at all); `harness` extends it with
+   `py3-pip`/`git`/spaCy/onnxruntime/click for the CVV scoring layer
+   that only `eval`/`discover`/`local_ollama` need.
+   `docker-compose.yml`'s `server` service builds with `target: server`
+   explicitly; every other service still builds the default (last)
+   stage, `harness`, unchanged. Terraform equivalent:
+   `docker_image.server` (new, light) vs. `docker_image.harness`
+   (unchanged, heavy) -- `docker_container.server` now references the
+   former. Verified: `bash -n` on all 9 RUN blocks across both stages,
+   and `entrypoint.sh`'s full serve-mode dispatch logic actually
+   executed end-to-end under `dash` with a stubbed `opencode` binary
+   (not just syntax-checked) -- confirmed the discovery-failure
+   fallback path and the final `exec opencode serve --port ...
+   --hostname ...` call both fire correctly under POSIX sh. NOT
+   verified: an actual `docker-compose build server` against the new
+   light target (no Docker daemon here) -- this is the next real test
+   to run.
 
 ## Setup
 

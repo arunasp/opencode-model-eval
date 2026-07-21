@@ -16,15 +16,94 @@ ARG OPENCODE_REF=latest
 
 FROM ${OPENCODE_IMAGE}:${OPENCODE_REF} AS base
 
+# --- Stage: server -------------------------------------------------------
+# Deliberately LIGHT. This is what the `server` role actually needs to
+# run `opencode serve` plus this project's local-Ollama auto-discovery
+# script -- nothing else. Previously the single `harness` stage below
+# bundled spaCy/onnxruntime/click/git into EVERY role including this
+# one, even though server never calls cvv_scan.py, run_eval_client.py,
+# or anything CVV-related. That's the exact "shared-foundation scope
+# creep" pattern this project already caught once before in a
+# different repo's CODEGEN.md (unused MQL5/Python sections inherited
+# wholesale) -- same mechanism, this time as a container's dependency
+# footprint instead of a doc's sections. Every build failure hit while
+# developing this repo traced back to a dependency the server role
+# never actually needed.
+FROM base AS server
+
+USER root
+
+# python3 only -- no py3-pip. discover_local_ollama_models.py is
+# stdlib-only (argparse/json/urllib/pathlib), confirmed by its own
+# module docstring and this Dockerfile's own build history: no pip
+# package has ever been required for it. ca-certificates is genuinely
+# needed here (not just for local Ollama discovery, which is plain
+# HTTP to a LAN address) -- opencode itself makes real outbound HTTPS
+# calls to cloud provider APIs (OpenCode Zen, DeepSeek, Zhipu) FROM
+# this container when eval/discover containers route requests through
+# it, and needs a trust store to verify those.
+#
+# jq was in every stage's install list before this split and was
+# NEVER actually invoked by anything running inside any container --
+# only by scripts/extract-opencode-key.sh, a HOST-side script run
+# directly on Cyberdyne before auth.json is even mounted in. Dropped
+# entirely, not moved to harness -- confirmed via repo-wide grep
+# before removing it, not assumed unused.
+RUN if command -v apk >/dev/null 2>&1; then \
+      apk add --no-cache ca-certificates python3; \
+    elif command -v apt-get >/dev/null 2>&1; then \
+      apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 \
+      && rm -rf /var/lib/apt/lists/*; \
+    else \
+      echo "FATAL: no supported package manager (apk/apt-get) found in base image" >&2; \
+      exit 1; \
+    fi
+
+# Pin HOME explicitly rather than relying on whatever user/home the base
+# image happens to ship with — removes the ambiguity of where
+# ~/.local/share/opencode/auth.json and ~/.config/opencode resolve to,
+# which otherwise depends on an unverified base-image convention.
+ENV HOME=/home/harness
+RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-suite /results \
+    && chmod -R 0777 "${HOME}" /results
+# NOTE: 0777 on the harness home dir is a deliberate relaxation, not an
+# oversight — this image may run under an arbitrary/overridden UID via
+# `docker-compose run --user`, and this is a local evaluation tool, not a
+# multi-tenant service. Tighten this if you run it anywhere less trusted.
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
+COPY config/opencode.base.json /opt/harness/opencode.base.json
+# --chmod on COPY requires BuildKit -- Cyberdyne's Docker (29.1.3) has
+# no working buildx component ("BuildKit is enabled but the buildx
+# component is missing or broken"), so the legacy builder is what
+# actually runs here. Explicit RUN chmod instead: portable to both.
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/discover_local_ollama_models.py \
+    && chmod 0644 /opt/harness/opencode.base.json
+
+ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json
+WORKDIR /workspace
+
+# 4096 is this project's own chosen fixed port -- NOT opencode's default.
+# Confirmed from source (cli/network.ts): real defaults are port=0
+# (random) and hostname=127.0.0.1 (loopback only, unreachable from
+# another container). Both explicitly overridden here so the client
+# service (see docker-compose.yml) can reach this one predictably.
+EXPOSE 4096
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["serve"]
+
 # --- Stage: harness ------------------------------------------------------
-# Single final stage now -- no more per-model layer. Model selection was
-# moved from a Docker build arg to an HTTP request parameter once
-# `opencode serve`'s API was confirmed to accept providerID/modelID per
-# request (server/routes/instance/httpapi/handlers/session.ts,
-# session/prompt.ts's ModelRef schema). See docs/CODEGEN.md's Docker
-# section for why this isn't a violation of "don't collapse stages for
-# convenience" -- there's no per-model build left to cache against.
-FROM base AS harness
+# Extends `server` rather than `base` -- reuses its python3/entrypoint/
+# config layers instead of duplicating them, and only adds what the
+# eval-client/discover roles actually need on top: pip, the CVV scoring
+# scripts, and their optional spaCy/onnxruntime enhancements. This is
+# the stage `docker-compose.yml`'s discover/eval/local_ollama services
+# build (server itself builds the `server` target above, not this one)
+# -- and it's still the LAST stage in this file, so it remains the
+# default `docker build`/`docker-compose build` target with no explicit
+# --target needed for those roles, same as before this split.
+FROM server AS harness
 
 USER root
 
@@ -41,20 +120,14 @@ USER root
 # this exact "tool internally calls pip without the flag" scenario.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
-# Base image distro isn't pinned by this Dockerfile (upstream ships both
-# Debian Trixie and Alpine variants per anomalyco/opencode#19474) — detect
-# the package manager rather than assume one.
-#
-# python3-pip and git added for the CVV scoring layer (cvv_scan.py,
-# axiom_cvv_verify.py) and its optional negation-detection/semantic-
-# fallback dependencies (spaCy + model, onnxruntime + tokenizers). This
-# makes the harness layer meaningfully heavier than a bare opencode
-# wrapper would be -- disclosed here rather than left for someone to
-# discover via a slow build.
+# py3-pip and git added here, not in the server stage: only this
+# stage's scripts need them (pip for the CVV scoring layer's
+# dependencies, git for fetch_embedding_model.sh's clone below).
+# python3/ca-certificates are already present, inherited from `server`.
 RUN if command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache jq ca-certificates python3 py3-pip git; \
+      apk add --no-cache py3-pip git; \
     elif command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && apt-get install -y --no-install-recommends jq ca-certificates python3 python3-pip git \
+      apt-get update && apt-get install -y --no-install-recommends python3-pip git \
       && rm -rf /var/lib/apt/lists/*; \
     else \
       echo "FATAL: no supported package manager (apk/apt-get) found in base image" >&2; \
@@ -94,36 +167,14 @@ RUN pip install --break-system-packages --no-cache-dir onnxruntime tokenizers nu
             "images and/or Python 3.14 -- onnxruntime has no published" \
             "wheel for either (microsoft/onnxruntime#25737, open)." >&2
 
-# Pin HOME explicitly rather than relying on whatever user/home the base
-# image happens to ship with — removes the ambiguity of where
-# ~/.local/share/opencode/auth.json and ~/.config/opencode resolve to,
-# which otherwise depends on an unverified base-image convention.
-ENV HOME=/home/harness
-RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-suite /results \
-    && chmod -R 0777 "${HOME}" /results
-# NOTE: 0777 on the harness home dir is a deliberate relaxation, not an
-# oversight — this image may run under an arbitrary/overridden UID via
-# `docker-compose run --user`, and this is a local evaluation tool, not a
-# multi-tenant service. Tighten this if you run it anywhere less trusted.
+RUN mkdir -p /task-suite /results && chmod -R 0777 /results
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
-COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
 COPY scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
 COPY scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
 COPY scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
-COPY config/opencode.base.json /opt/harness/opencode.base.json
-# --chmod on COPY requires BuildKit -- Cyberdyne's Docker (29.1.3) has
-# no working buildx component ("BuildKit is enabled but the buildx
-# component is missing or broken"), so the legacy builder is what
-# actually runs here. Explicit RUN chmod instead: portable to both.
-RUN chmod 0755 /usr/local/bin/entrypoint.sh \
-      /usr/local/bin/discover_and_select_model.py \
-      /usr/local/bin/discover_local_ollama_models.py \
-      /usr/local/bin/run_eval_client.py \
-    && chmod 0644 /opt/harness/tools/cvv_scan.py \
-      /opt/harness/tools/axiom_cvv_verify.py \
-      /opt/harness/opencode.base.json
+RUN chmod 0755 /usr/local/bin/discover_and_select_model.py /usr/local/bin/run_eval_client.py \
+    && chmod 0644 /opt/harness/tools/cvv_scan.py /opt/harness/tools/axiom_cvv_verify.py
 
 # Embedding model for axiom_cvv_verify.py's optional semantic action-
 # detection fallback. Sourced from a GitHub repo with the ONNX weights
@@ -135,14 +186,6 @@ RUN chmod 0755 /usr/local/bin/fetch_embedding_model.sh \
     && /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 
-ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json
-WORKDIR /workspace
-
-# 4096 is this project's own chosen fixed port -- NOT opencode's default.
-# Confirmed from source (cli/network.ts): real defaults are port=0
-# (random) and hostname=127.0.0.1 (loopback only, unreachable from
-# another container). Both explicitly overridden here so the client
-# service (see docker-compose.yml) can reach this one predictably.
-EXPOSE 4096
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["serve"]
+# CMD is inherited from `server` (["serve"]) -- eval-client/discover
+# roles override it per-service via docker-compose's `command:` /
+# terraform's `command` argument, same as before this split.

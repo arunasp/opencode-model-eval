@@ -8,6 +8,39 @@ resource "docker_network" "eval_net" {
 }
 
 # --- Server image + container -----------------------------------------
+# Deliberately a SEPARATE, LIGHTER image from docker_image.harness below
+# -- server only needs the Dockerfile's `server` target (python3 +
+# entrypoint.sh + discover_local_ollama_models.py + config), not the
+# spaCy/onnxruntime/CVV-scoring layer that eval/discover/local_ollama
+# need. Building it as one shared image with everyone else was the
+# "shared-foundation scope creep" pattern this project's own CVV
+# discipline already names -- see Dockerfile's `server` stage comment
+# for the full reasoning. Triggers scoped to only the files THIS
+# image's `server` target actually reads (dockerfile_sha1 still
+# necessarily covers the whole file, since Docker can't hash a single
+# stage in isolation) -- entrypoint.sh and config are real inputs;
+# run_eval_client.py deliberately is NOT a trigger here, since the
+# `server` stage never copies or reads it.
+resource "docker_image" "server" {
+  name = "opencode-model-eval-server:latest"
+
+  build {
+    context    = var.harness_root
+    dockerfile = "Dockerfile"
+    target     = "server"
+    build_args = {
+      OPENCODE_IMAGE = var.opencode_image
+      OPENCODE_REF   = var.opencode_ref
+    }
+  }
+
+  triggers = {
+    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1 = filesha1("${var.harness_root}/entrypoint.sh")
+    config_sha1     = filesha1("${var.harness_root}/config/opencode.base.json")
+  }
+}
+
 # Single, static image now -- no per-model build. Model selection moved
 # from a Docker build arg to an HTTP request parameter once opencode
 # serve's API was confirmed to accept providerID/modelID per request.
@@ -34,7 +67,7 @@ resource "docker_image" "harness" {
 
 resource "docker_container" "server" {
   name  = "opencode-model-eval-server"
-  image = docker_image.harness.image_id
+  image = docker_image.server.image_id
   command = ["serve"]
 
   # This IS a persistent service now, unlike the old per-model batch

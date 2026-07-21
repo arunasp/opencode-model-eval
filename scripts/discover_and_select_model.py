@@ -6,8 +6,13 @@ Two modes:
   --model provider/id   Skip discovery entirely, use this model. Primary
                          path for reproducible runs -- the existing named
                          compose services (hy3, deepseek-v4-pro, glm-5-2,
-                         gemma4-31b-local) already do this at build time;
-                         this flag is for ad-hoc runs against something
+                         gemma4-local, nemotron-3-nano-local,
+                         qwen3-coder-local, qwen3-coder-fixed-local,
+                         qwen2.5-coder-local) already pass this as a
+                         runtime env var via docker-compose/terraform,
+                         not a Docker build arg (see README's "Why this
+                         replaced an earlier per-model build design").
+                         This flag is for ad-hoc runs against something
                          not in that fixed list.
   (no --model)           Query `opencode models --verbose`, filter to
                          free/available candidates, exclude anything

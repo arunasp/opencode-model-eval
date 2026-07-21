@@ -42,7 +42,13 @@ services:
   # Docker build arg. Started once, stays up, every eval run and every
   # model under test talks to this same container over HTTP.
   server:
-    <<: *harness-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
     command: ["serve"]
     ports:
       - "${OPENCODE_SERVE_PORT:-4096}:4096"

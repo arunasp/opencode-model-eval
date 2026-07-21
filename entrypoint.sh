@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # entrypoint.sh — dispatcher with two modes, matching this repo's
 # static-server + HTTP-client architecture (see docs/CODEGEN.md's
 # Docker section for why there's no more per-model build/entrypoint):
@@ -7,7 +7,16 @@
 #                               This is the CMD default (see Dockerfile).
 #   entrypoint.sh eval-client  runs run_eval_client.py against a running
 #                               serve instance over HTTP, once, and exits.
-set -euo pipefail
+#
+# POSIX sh, not bash: the `server` stage's apk install list never
+# included bash (only ca-certificates/python3), so a #!/bin/bash
+# shebang would fail the same confusing "not found" way
+# fetch_embedding_model.sh's did -- the shell fails to find the
+# INTERPRETER, not this file. `set -o pipefail` (the one bash-only
+# bit) is dropped rather than worked around: there are no pipes
+# anywhere in this script's actual logic, so it was never doing
+# anything here either.
+set -eu
 
 readonly PORT="${OPENCODE_SERVE_PORT:-4096}"
 readonly HOSTNAME_BIND="${OPENCODE_SERVE_HOSTNAME:-0.0.0.0}"
