@@ -204,6 +204,25 @@ against a real run before you trust the pipeline:
     doesn't have) -- the manual `bash scripts/extract-opencode-key.sh`
     path documented in Setup below still works unchanged if you'd
     rather not have Terraform run it automatically.
+11. **Live per-round-trip progress dots, and per-tier HTTP errors no
+    longer crash the whole run.** Both prompted directly by a real
+    run on Cyberdyne: (a) a single slow LLM response looked identical
+    to a hung process from the CLI's perspective, since nothing
+    printed until a whole tier finished; (b) an actual
+    `ProviderModelNotFoundError` (surfaced as an HTTP 500) took down
+    the entire eval run with a raw Python traceback, losing whatever
+    ceiling earlier tiers/categories had already established.
+    `run_category()` now prints one flushed dot per HTTP round-trip as
+    it happens (see the "Console output" note above `report.json`'s
+    docs), and catches `RuntimeError` from a failed request/session
+    call, reporting it as an `E`-marked tier and moving on to the next
+    category instead of crashing. Verified by monkeypatching the HTTP
+    layer with controllable fakes (not the full npm+opencode
+    round-trip -- faster, still exercises the real code paths): all-
+    pass, fail-at-tier-2 with tier-3-correctly-never-running, and the
+    error path with the exact HTTP 500 message format seen live,
+    confirming the dot string, `ceiling`, and returned tier count are
+    all correct in each case.
 
 ## Setup
 
@@ -328,6 +347,23 @@ failure — check the corresponding `tier1.json`'s `reason` field:
 requires human/test confirmation (format compliance, code correctness)
 that this harness can't check automatically. Don't read a
 `needs_manual_review` stop as the same thing as an actual CVV violation.
+Each category entry also carries a `progress_dots` string (`.` pass,
+`F` fail, `R` needs review, `E` request/HTTP error) -- same character
+sequence printed live to the console as each tier runs, and again as
+an aligned grid at the end of the run. `E` specifically means the tier
+never got a real answer to score (e.g. the model ID doesn't exist,
+insufficient balance, a 500) -- treat it as "inconclusive," not as a
+capability failure the way `F` is.
+
+**Console output while a run is in progress:** each tier prints one
+flushed dot per HTTP round-trip (session create, setup message, probe
+message) as it happens, not just once the whole tier finishes -- a
+single slow LLM response previously looked identical to a hung
+process from the CLI's perspective. A run that's gone silent for
+several minutes with the log file (see caveat below) also showing no
+new lines is the actual signal something's stuck; dots not advancing
+within a single tier for a long time is expected for a slow model, not
+a bug.
 
 ## Test ladder
 

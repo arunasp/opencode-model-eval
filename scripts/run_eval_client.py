@@ -196,16 +196,44 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
     category_dir.mkdir(parents=True, exist_ok=True)
     ceiling = 0
     tier_results = []
+    summary_dots = []  # one char per tier: . pass / F fail / R review / E error -- printed as a compact row at the end of this category, and again in main()'s final grid
 
     for tier_def in category["tiers"]:
         tier_num = tier_def["tier"]
-        print(f"  [tier {tier_num}] source={tier_def['source']}", file=sys.stderr)
+        # Progress within a single tier, not just between tiers: a
+        # single slow LLM response previously looked identical to a
+        # hung process from the CLI's perspective (nothing printed
+        # until the whole tier finished). One flushed dot per HTTP
+        # round-trip instead -- visible movement during exactly the
+        # kind of multi-minute single-request wait that prompted this.
+        print(f"  [tier {tier_num}] source={tier_def['source']} ", end="", file=sys.stderr, flush=True)
 
-        session_id = create_session(base_url)
-        setup_resp = send_message(base_url, session_id, provider, model_id, setup_message)
-        setup_text, setup_tools = extract_reply(setup_resp)
-        probe_resp = send_message(base_url, session_id, provider, model_id, tier_def["prompt"])
-        probe_text, probe_tools = extract_reply(probe_resp)
+        try:
+            session_id = create_session(base_url)
+            print(".", end="", file=sys.stderr, flush=True)
+            setup_resp = send_message(base_url, session_id, provider, model_id, setup_message)
+            print(".", end="", file=sys.stderr, flush=True)
+            setup_text, setup_tools = extract_reply(setup_resp)
+            probe_resp = send_message(base_url, session_id, provider, model_id, tier_def["prompt"])
+            print(".", end="", file=sys.stderr, flush=True)
+            probe_text, probe_tools = extract_reply(probe_resp)
+        except RuntimeError as e:
+            # Previously uncaught here -- one tier's HTTP/model error
+            # (e.g. ProviderModelNotFoundError surfaced as an HTTP 500)
+            # took down the entire eval run with a raw Python
+            # traceback, losing whatever ceiling had already been
+            # established by earlier tiers/categories. Report cleanly,
+            # stop this category (same as a normal FAIL would), let
+            # the overall run continue to the next category instead.
+            print(f" -> ERROR: {e}", file=sys.stderr)
+            summary_dots.append("E")
+            tier_results.append({
+                "tier": tier_num, "source": tier_def["source"], "passed": False,
+                "needs_manual_review": False, "reason": f"HTTP/request error: {e}",
+                "findings": {}, "session_id": None,
+                "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            break
 
         transcript = events_to_transcript(setup_message, setup_text, setup_tools,
                                            tier_def["prompt"], probe_text, probe_tools)
@@ -230,14 +258,16 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         tier_results.append(tier_record)
 
         status = "PASS" if passed else ("NEEDS REVIEW" if needs_review else "FAIL")
-        print(f"    -> {status}: {reason}", file=sys.stderr)
+        print(f" -> {status}: {reason}", file=sys.stderr)
+        summary_dots.append("." if passed else ("R" if needs_review else "F"))
 
         if passed:
             ceiling = tier_num
         else:
             break
 
-    return {"category": cat_id, "ceiling": ceiling, "tiers": tier_results}
+    print(f"  progress: {''.join(summary_dots)} (ceiling: tier {ceiling})", file=sys.stderr)
+    return {"category": cat_id, "ceiling": ceiling, "tiers": tier_results, "progress_dots": "".join(summary_dots)}
 
 
 def main() -> int:
@@ -285,8 +315,24 @@ def main() -> int:
         last_tier = cat_report["tiers"][-1] if cat_report["tiers"] else None
         note = ""
         if last_tier and not last_tier["passed"]:
-            note = " [stopped: NEEDS MANUAL REVIEW]" if last_tier["needs_manual_review"] else " [stopped: CVV violation]"
+            if last_tier.get("needs_manual_review"):
+                note = " [stopped: NEEDS MANUAL REVIEW]"
+            elif last_tier.get("reason", "").startswith("HTTP/request error"):
+                note = " [stopped: ERROR]"
+            else:
+                note = " [stopped: CVV violation]"
         print(f"  {cat_report['category']}: ceiling tier {cat_report['ceiling']}{note}", file=sys.stderr)
+
+    # Compact grid, all categories aligned -- the "at a glance, what
+    # happened across the whole run" view. . pass / F fail / R needs
+    # review / E request error. Category names padded to the longest
+    # one so the dot-columns line up.
+    print(f"\n=== Progress grid ===", file=sys.stderr)
+    name_width = max(len(c["category"]) for c in report["categories"]) if report["categories"] else 0
+    for cat_report in report["categories"]:
+        name = cat_report["category"].ljust(name_width)
+        print(f"  {name} : {cat_report.get('progress_dots', '')}", file=sys.stderr)
+
     print(f"\nFull report: {results_dir / 'report.json'}", file=sys.stderr)
     return 0
 
