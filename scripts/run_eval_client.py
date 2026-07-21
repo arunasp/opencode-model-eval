@@ -58,6 +58,7 @@ specific branch remains unverified against real tool-call output.
 """
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -440,6 +441,43 @@ def check_pass(scan_result: dict, criteria: dict) -> tuple[bool, str]:
     return True, "pass_criteria satisfied (CVV-only tier)"
 
 
+def extract_error_refs(text: str) -> set:
+    """Pulls opencode error 'ref' identifiers (e.g. err_9f166d92) out of
+    an HTTP error body string -- these appear in this file's own error
+    messages (see http_post's HTTPError branch, which embeds the raw
+    JSON body) and correlate to specific server-log lines that often
+    carry NO session_id at all. Confirmed from a real captured log:
+    the single most useful line for diagnosing a failure --
+    'message=failed ref=err_... error="ProviderModelNotFoundError...'
+    -- has no session.id/id=ses_ token whatsoever. Filtering a
+    server-log excerpt purely by session_id would silently miss
+    exactly the line most worth keeping; refs close that gap.
+    """
+    return set(re.findall(r'"ref":\s*"(err_[a-zA-Z0-9]+)"', text))
+
+
+def filter_log_by_identifiers(log_text: str, identifiers: set) -> str:
+    """Keeps only lines containing any of the given identifiers as a
+    substring. Deliberately substring matching, not a specific
+    key=value regex per identifier type -- session IDs/refs appear
+    under different field names across different log line shapes
+    (id=, session.id=, ref=), and a substring match catches all of
+    them without needing to enumerate every field name opencode might
+    use (including ones that might change in a future version).
+
+    Empty identifiers falls back to the WHOLE log unfiltered, not an
+    empty result -- an over-inclusive artifact is more useful than an
+    accidentally-empty one if this run somehow produced no identifiers
+    to filter by at all.
+    """
+    if not identifiers:
+        return log_text
+    return "\n".join(
+        line for line in log_text.splitlines()
+        if any(ident in line for ident in identifiers)
+    )
+
+
 def run_category(category: dict, base_url: str, provider: str, model_id: str,
                   setup_message: str, category_dir: Path) -> dict:
     cat_id = category["id"]
@@ -605,18 +643,27 @@ def main() -> int:
     # isn't scoped to any one run. This makes it a per-run file
     # artifact living alongside report.json instead.
     #
-    # Scope caveat, stated plainly rather than silently: this is the
-    # server's WHOLE current log file, not filtered to this run's
-    # session IDs -- correct and simple for the current single-run-at-
-    # a-time usage (one docker-compose run/terraform apply at a time
-    # against the one persistent server), but if multiple eval-client
-    # containers ever run concurrently against the same server, this
-    # snapshot would include their interleaved log lines too, not just
-    # this run's. Not an issue for how this harness is actually used
-    # today; worth revisiting if concurrent runs become a real pattern.
+    # Filtered by this run's own session IDs and error refs (see
+    # extract_error_refs/filter_log_by_identifiers) -- NOT a raw whole-
+    # file copy. Closes the earlier scope gap directly: the server's
+    # log accumulates every run's history for as long as it stays up,
+    # and a previous version of this capture step copied the whole
+    # thing unfiltered, meaning results from run N would include every
+    # other run's interleaved lines too. Falls back to the whole file
+    # only if this run produced zero identifiers to filter by at all
+    # (see filter_log_by_identifiers's own fallback).
+    log_identifiers = set()
+    for cat_report in report["categories"]:
+        for tier in cat_report["tiers"]:
+            if tier.get("session_id"):
+                log_identifiers.add(tier["session_id"])
+            log_identifiers |= extract_error_refs(tier.get("reason", ""))
+
     try:
         if OPENCODE_LOG_PATH.exists():
-            shutil.copy2(OPENCODE_LOG_PATH, results_dir / "server.log")
+            full_log = OPENCODE_LOG_PATH.read_text(errors="replace")
+            filtered_log = filter_log_by_identifiers(full_log, log_identifiers)
+            (results_dir / "server.log").write_text(filtered_log)
         else:
             print(f"[eval-client] NOTE: {OPENCODE_LOG_PATH} not found -- "
                   "server.log artifact not captured. Confirm the opencode-log "

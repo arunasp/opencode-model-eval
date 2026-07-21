@@ -306,30 +306,44 @@ against a real run before you trust the pipeline:
     -- this is a nice-to-have artifact, not something the run's
     correctness depends on).
 
-    **Scope caveat, stated plainly:** this captures the server's
-    WHOLE current log file, not filtered to this run's specific
-    session IDs -- correct and simple for today's actual usage (one
-    `docker-compose run`/`terraform apply` at a time against the one
-    persistent server), but if multiple eval-client containers ever
-    run concurrently, this snapshot would include their interleaved
-    log lines too, not just this run's. Not an issue today; worth
-    revisiting if concurrent runs become a real pattern.
+    **Filtered by this run's own session IDs and error refs, not a
+    raw whole-file copy** -- closes the scope gap an earlier version
+    of this feature had (copying the server's entire accumulated
+    history unfiltered, which would mix in every other run's
+    interleaved log lines). Real, non-obvious finding worth stating
+    plainly: the single most useful line for diagnosing a failure --
+    `message=failed ref=err_... error="ProviderModelNotFoundError...`
+    -- carries NO session ID at all in the real format observed, only
+    a `ref=` token. Filtering purely by session ID would have silently
+    dropped exactly the line most worth keeping; the filter matches on
+    both session IDs (from `create_session`) and error refs (parsed
+    out of this file's own HTTP-error messages) to catch both cases.
+    Substring matching, not per-field regexes, so it isn't tied to a
+    specific field name (`id=`, `session.id=`, `ref=`) that might
+    change in a future opencode version. Falls back to the unfiltered
+    whole file only if a run somehow produces zero identifiers at all
+    to filter by.
 
     Verified end-to-end through the REAL `main()` code path (not a
-    reimplementation of the copy logic in isolation): a full fake run
-    with a real log file present correctly copies it with matching
-    content; a full fake run with the log file genuinely absent
-    correctly prints a `NOTE`, does NOT create `server.log`, and still
-    completes normally with `report.json` intact. Docker/Terraform
-    volume wiring confirmed via `docker-compose config` (real 1.29.2,
-    not just YAML parse) showing the correct `rw`/`ro` mount on each
-    of the 4 distinct service/resource shapes, and HCL2 parsing clean
-    across all 4 `docker_volume.opencode_log.name` references. NOT
-    verified: an actual multi-container Docker run confirming the
-    volume genuinely shares data between separate containers in
-    practice (no Docker daemon in this environment) -- the config is
-    correct on paper per the provider's own documented syntax, but
-    this specific mechanism hasn't been observed working live yet.
+    reimplementation of the copy/filter logic in isolation): a real-
+    shaped log excerpt (modeled directly on the actual log captured
+    earlier this session) with a mix of this-run and unrelated-run
+    lines correctly keeps the ref-only error line AND the session-
+    tagged lines, correctly drops unrelated sessions; a full fake run
+    through `main()` confirms the same filtering end-to-end, not just
+    at the helper-function level; the log-file-absent case still
+    prints a clean `NOTE` and completes normally with `report.json`
+    intact; empty-identifiers correctly falls back to the whole file
+    rather than an empty result. Docker/Terraform volume wiring
+    confirmed via `docker-compose config` (real 1.29.2, not just YAML
+    parse) showing the correct `rw`/`ro` mount on each of the 4
+    distinct service/resource shapes, and HCL2 parsing clean across
+    all 4 `docker_volume.opencode_log.name` references. NOT verified:
+    an actual multi-container Docker run confirming the volume
+    genuinely shares data between separate containers in practice (no
+    Docker daemon in this environment) -- the config is correct on
+    paper per the provider's own documented syntax, but this specific
+    mechanism hasn't been observed working live yet.
 
 ## Setup
 
