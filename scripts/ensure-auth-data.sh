@@ -32,11 +32,62 @@ readonly EXTRACT_SCRIPT="${SCRIPT_DIR}/extract-opencode-key.sh"
 readonly AUTH_DATA_DIR="${SCRIPT_DIR}/../auth-data"
 readonly AUTH_FILE="${AUTH_DATA_DIR}/auth.json"
 
+# auth-data/ is fully gitignored -- a fresh clone has no such directory
+# at all. If Docker (running as root) is the first thing to ever touch
+# this path (i.e. docker-compose/terraform ran before
+# extract-opencode-key.sh ever did), it creates the WHOLE chain as
+# root while bind-mounting, not just the phantom auth.json leaf --
+# confirmed live: clearing the leaf directory alone still left the
+# parent unwritable by a normal user, so the subsequent extraction
+# write failed too. Reclaim ownership of the parent if needed, before
+# touching the leaf.
+if [ -d "${AUTH_DATA_DIR}" ] && [ ! -w "${AUTH_DATA_DIR}" ]; then
+  echo "ensure-auth-data.sh: ${AUTH_DATA_DIR} isn't writable by you --" >&2
+  echo "  same root-ownership cause as the phantom-directory case (Docker" >&2
+  echo "  created the whole path while bind-mounting). Reclaiming ownership" >&2
+  echo "  with sudo (will prompt for your password)..." >&2
+  sudo chown "$(id -un):$(id -gn)" "${AUTH_DATA_DIR}"
+fi
+
 if [ -d "${AUTH_FILE}" ]; then
   echo "ensure-auth-data.sh: ${AUTH_FILE} is a directory -- this is Docker's" >&2
   echo "  phantom-mount bug (a bind-mount source that didn't exist yet), not" >&2
   echo "  real content. Removing it via rmdir (refuses if non-empty)." >&2
-  rmdir "${AUTH_FILE}"
+
+  # Capture stderr into a variable rather than a temp file -- avoids a
+  # cleanup/collision concern for a script that might run concurrently.
+  # Two distinct failure modes here, and they need different responses:
+  #   - "Permission denied": the Docker daemon runs as root and created
+  #     this directory (and often its parent auth-data/ too) as root --
+  #     hit live on Cyberdyne. A non-root user genuinely cannot rmdir
+  #     it without sudo, no matter how empty it is. Retry with sudo.
+  #   - Anything else (e.g. "Directory not empty"): rmdir refusing here
+  #     means this ISN'T actually the phantom-mount case -- there's
+  #     real content Terraform/Compose never should have touched. Do
+  #     NOT force-delete; surface it and let the user look themselves.
+  if ! rmdir_err="$(rmdir "${AUTH_FILE}" 2>&1)"; then
+    if echo "${rmdir_err}" | grep -qi "permission denied"; then
+      echo "ensure-auth-data.sh: permission denied -- this directory was created" >&2
+      echo "  by the Docker daemon (runs as root), so removing it needs root too," >&2
+      echo "  regardless of how empty it is. Retrying with sudo (will prompt for" >&2
+      echo "  your password)..." >&2
+      if ! sudo_err="$(sudo rmdir "${AUTH_FILE}" 2>&1)"; then
+        echo "ensure-auth-data.sh: rmdir still failed even with sudo:" >&2
+        echo "  ${sudo_err}" >&2
+        echo "  If that says 'not empty', this wasn't actually the phantom-mount" >&2
+        echo "  case -- there may be real content here. Not deleting anything" >&2
+        echo "  automatically. Inspect it yourself: sudo ls -la ${AUTH_FILE}" >&2
+        exit 1
+      fi
+    else
+      echo "ensure-auth-data.sh: rmdir failed for a reason other than permissions:" >&2
+      echo "  ${rmdir_err}" >&2
+      echo "  This means it probably ISN'T the phantom-mount case -- there may be" >&2
+      echo "  real content here. Not deleting anything automatically. Inspect it" >&2
+      echo "  yourself: ls -la ${AUTH_FILE}" >&2
+      exit 1
+    fi
+  fi
   echo "ensure-auth-data.sh: phantom directory removed." >&2
 fi
 
