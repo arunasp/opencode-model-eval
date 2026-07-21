@@ -51,4 +51,3 @@ variable "local_ollama_models" {
     "qwen2.5-coder-local"      = "qwen2.5-coder:7b"
   }
 }
-
