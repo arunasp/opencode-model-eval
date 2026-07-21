@@ -17,10 +17,18 @@
 # Ollama only serializes model residency under memory pressure --
 # loading a new model when there isn't room forces an implicit,
 # timing-dependent unload of an idle one (default keep_alive is 5m).
-# This script makes the switch explicit and immediate instead of
-# relying on that: unload everything that isn't the target, then load
-# the target, so two local eval runs in a row never silently share (or
-# fight over) VRAM.
+# This script makes the switch explicit instead of relying on that.
+#
+# Both calls are genuinely slow on real hardware: unloading a large,
+# partially CPU-offloaded model takes real time to flush (confirmed
+# live: `ollama ps` shows a "Stopping..." transitional state), and
+# Ollama queues a load request server-side until that memory is
+# actually free (its own docs: "insufficient available memory...
+# requests will be queued"). Rather than block on curl's own return
+# and give no feedback, both the unload and the load run in the
+# background and this script polls /api/ps itself, printing elapsed
+# time so a slow-but-real wait is distinguishable from a hang, and
+# failing loudly on a timeout instead of sitting forever.
 #
 # Usage:
 #   bash scripts/ollama-model-switch.sh list
@@ -29,9 +37,15 @@
 #
 # Env:
 #   OLLAMA_BASE_URL (default http://localhost:11434)
+#   OLLAMA_SWITCH_TIMEOUT (default 600 -- seconds to wait for a single
+#     unload or load before giving up; large CPU/GPU-split models can
+#     legitimately take minutes)
+#   OLLAMA_SWITCH_POLL_INTERVAL (default 3 -- seconds between /api/ps checks)
 set -euo pipefail
 
 : "${OLLAMA_BASE_URL:=http://localhost:11434}"
+: "${OLLAMA_SWITCH_TIMEOUT:=600}"
+: "${OLLAMA_SWITCH_POLL_INTERVAL:=3}"
 
 for cmd in curl jq; do
   if ! command -v "${cmd}" >/dev/null 2>&1; then
@@ -46,22 +60,65 @@ ollama_list_loaded() {
   curl -sS "${OLLAMA_BASE_URL}/api/ps" | jq -r '.models[]?.name'
 }
 
-ollama_unload() {
+ollama_is_loaded() {
+  ollama_list_loaded | grep -qFx "$1"
+}
+
+ollama_unload_bg() {
+  # Fires the unload request in the background; caller polls for
+  # completion with wait_until instead of blocking on this directly.
   local model="$1"
   curl -sS -X POST "${OLLAMA_BASE_URL}/api/generate" \
     -H 'Content-Type: application/json' \
     -d "$(jq -n --arg m "${model}" '{model: $m, keep_alive: 0}')" \
-    >/dev/null
+    >/dev/null 2>&1 &
+  echo $!
 }
 
-ollama_load() {
-  local model="$1"
+ollama_load_bg() {
+  # Fires the load request in the background; caller polls for
+  # completion with wait_until instead of blocking on this directly.
   # Empty-prompt generate with no keep_alive override: preloads the
   # model, leaves it on Ollama's default 5m keep_alive.
+  local model="$1"
   curl -sS -X POST "${OLLAMA_BASE_URL}/api/generate" \
     -H 'Content-Type: application/json' \
     -d "$(jq -n --arg m "${model}" '{model: $m}')" \
-    >/dev/null
+    >/dev/null 2>&1 &
+  echo $!
+}
+
+# wait_until <description> <bg_pid> <target_state: loaded|unloaded> <model>
+# Polls /api/ps every OLLAMA_SWITCH_POLL_INTERVAL seconds, printing
+# elapsed time, until the model reaches the target state or
+# OLLAMA_SWITCH_TIMEOUT is hit. Returns non-zero (without killing the
+# still-running background request) on timeout, so a real slow
+# operation isn't silently abandoned -- the caller decides what to do
+# with a timed-out switch.
+wait_until() {
+  local desc="$1" bg_pid="$2" target_state="$3" model="$4"
+  local elapsed=0
+
+  while true; do
+    if [ "${target_state}" = "loaded" ] && ollama_is_loaded "${model}"; then
+      break
+    fi
+    if [ "${target_state}" = "unloaded" ] && ! ollama_is_loaded "${model}"; then
+      break
+    fi
+    if [ "${elapsed}" -ge "${OLLAMA_SWITCH_TIMEOUT}" ]; then
+      echo "TIMEOUT after ${elapsed}s waiting for: ${desc} (still running in background, pid ${bg_pid})" >&2
+      return 1
+    fi
+    echo "  ...still waiting for ${desc} (${elapsed}s elapsed)" >&2
+    sleep "${OLLAMA_SWITCH_POLL_INTERVAL}"
+    elapsed=$((elapsed + OLLAMA_SWITCH_POLL_INTERVAL))
+  done
+
+  # Reap the background curl now that /api/ps confirms the state
+  # change; best-effort only, since the process may already be gone.
+  wait "${bg_pid}" 2>/dev/null || true
+  echo "${desc}: confirmed after ${elapsed}s" >&2
 }
 
 cmd_unload_all() {
@@ -71,16 +128,18 @@ cmd_unload_all() {
     echo "Nothing loaded." >&2
     return 0
   fi
+  local model pid
   while IFS= read -r model; do
     [ -z "${model}" ] && continue
     echo "Unloading ${model}..." >&2
-    ollama_unload "${model}"
+    pid="$(ollama_unload_bg "${model}")"
+    wait_until "unload of ${model}" "${pid}" unloaded "${model}"
   done <<< "${loaded}"
 }
 
 cmd_switch_to() {
   local target="$1"
-  local loaded already_loaded
+  local loaded already_loaded model pid
   loaded="$(ollama_list_loaded)"
   already_loaded=false
 
@@ -92,7 +151,8 @@ cmd_switch_to() {
         continue
       fi
       echo "Unloading ${model} (switching to ${target})..." >&2
-      ollama_unload "${model}"
+      pid="$(ollama_unload_bg "${model}")"
+      wait_until "unload of ${model}" "${pid}" unloaded "${model}"
     done <<< "${loaded}"
   fi
 
@@ -100,7 +160,8 @@ cmd_switch_to() {
     echo "${target} already loaded." >&2
   else
     echo "Loading ${target}..." >&2
-    ollama_load "${target}"
+    pid="$(ollama_load_bg "${target}")"
+    wait_until "load of ${target}" "${pid}" loaded "${target}"
   fi
 }
 
