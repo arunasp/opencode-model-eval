@@ -14,6 +14,8 @@ terraform/*.tfvars
 terraform/crash.log
 terraform/*.plan
 terraform/*-plan.log
+*.log
+**.log
 
 # One-time patch-delivery scripts (apply-*.sh) and build logs -- these
 # are session artifacts, not source; each is regenerated fresh per
