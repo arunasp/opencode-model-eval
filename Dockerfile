@@ -28,6 +28,19 @@ FROM base AS harness
 
 USER root
 
+# spacy's own `python3 -m spacy download <model>` command internally
+# shells out to a SEPARATE pip subprocess to install the model wheel --
+# that inner call does NOT inherit the Dockerfile's own explicit
+# `--break-system-packages` flag (that flag only applies to the outer
+# `pip install spacy click` invocation below), and hits Alpine's
+# PEP-668 "externally-managed-environment" block on its own. Setting
+# this env var is pip's documented equivalent of passing
+# --break-system-packages to every pip invocation, inherited by
+# subprocesses -- fixes the inner call without needing to control it
+# directly. Confirmed against multiple independent sources describing
+# this exact "tool internally calls pip without the flag" scenario.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 # Base image distro isn't pinned by this Dockerfile (upstream ships both
 # Debian Trixie and Alpine variants per anomalyco/opencode#19474) — detect
 # the package manager rather than assume one.
