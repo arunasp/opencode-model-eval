@@ -48,7 +48,14 @@ RUN if command -v apk >/dev/null 2>&1; then \
       exit 1; \
     fi
 
-RUN pip install --break-system-packages --no-cache-dir spacy \
+# click added explicitly -- confirmed upstream bug (explosion/spaCy#13971,
+# open): spacy/cli/_util.py does `from click import NoSuchOption` but
+# spaCy never lists click as its own dependency, relying on typer to
+# pull it in transitively. typer>=0.26 stopped depending on click, so
+# it silently stopped being installed. Hit live on Cyberdyne:
+# "ModuleNotFoundError: No module named 'click'" during `spacy
+# download`, after pip reported all 41 packages installed successfully.
+RUN pip install --break-system-packages --no-cache-dir spacy click \
     && python3 -m spacy download en_core_web_sm \
     || echo "WARN: spaCy/en_core_web_sm install failed -- negation-aware" \
             "claim detection (axiom_cvv_verify.py) will fall back to" \
@@ -86,21 +93,33 @@ RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-su
 # `docker-compose run --user`, and this is a local evaluation tool, not a
 # multi-tenant service. Tighten this if you run it anywhere less trusted.
 
-COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY --chmod=0755 scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
-COPY --chmod=0755 scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
-COPY --chmod=0755 scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
-COPY --chmod=0644 scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
-COPY --chmod=0644 scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
-COPY --chmod=0644 config/opencode.base.json /opt/harness/opencode.base.json
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
+COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
+COPY scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
+COPY scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
+COPY scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
+COPY config/opencode.base.json /opt/harness/opencode.base.json
+# --chmod on COPY requires BuildKit -- Cyberdyne's Docker (29.1.3) has
+# no working buildx component ("BuildKit is enabled but the buildx
+# component is missing or broken"), so the legacy builder is what
+# actually runs here. Explicit RUN chmod instead: portable to both.
+RUN chmod 0755 /usr/local/bin/entrypoint.sh \
+      /usr/local/bin/discover_and_select_model.py \
+      /usr/local/bin/discover_local_ollama_models.py \
+      /usr/local/bin/run_eval_client.py \
+    && chmod 0644 /opt/harness/tools/cvv_scan.py \
+      /opt/harness/tools/axiom_cvv_verify.py \
+      /opt/harness/opencode.base.json
 
 # Embedding model for axiom_cvv_verify.py's optional semantic action-
 # detection fallback. Sourced from a GitHub repo with the ONNX weights
 # committed directly in-repo -- no Hugging Face/Ollama dependency, which
 # matters here since this build may run in a network-restricted CI
 # environment that only allowlists package registries + GitHub.
-COPY --chmod=0755 scripts/fetch_embedding_model.sh /usr/local/bin/fetch_embedding_model.sh
-RUN /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
+COPY scripts/fetch_embedding_model.sh /usr/local/bin/fetch_embedding_model.sh
+RUN chmod 0755 /usr/local/bin/fetch_embedding_model.sh \
+    && /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 
 ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json
