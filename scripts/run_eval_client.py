@@ -60,6 +60,7 @@ import json
 import os
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -82,6 +83,18 @@ def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
         raise RuntimeError(f"POST {path} failed: HTTP {e.code}: {body_text[:500]}") from e
     except urllib.error.URLError as e:
         raise RuntimeError(f"POST {path} failed to reach {url}: {e.reason}") from e
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # Reached the server, got a 200, but the body wasn't valid
+        # JSON/UTF-8 -- e.g. an HTML error page from a proxy in front
+        # of opencode, a truncated-but-Content-Length-satisfied body,
+        # or a non-JSON success response from some future opencode
+        # version. Previously completely unhandled: json.loads()'s
+        # exception isn't urllib.error.*, isn't OSError, isn't
+        # TimeoutError -- it's a ValueError subclass, disjoint from
+        # every network-layer exception this function already caught,
+        # so it would have crashed the run exactly like the others did
+        # before being fixed.
+        raise RuntimeError(f"POST {path} returned a response that wasn't valid JSON/UTF-8: {e}") from e
     except TimeoutError as e:
         # Hit live: the connection succeeds (request sent fine) but the
         # server never finishes sending a response within `timeout`
@@ -96,6 +109,18 @@ def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
         # OSError subclass, so ordering matters (first matching except
         # wins).
         raise RuntimeError(f"POST {path} timed out after {timeout}s waiting for a response from {url}") from e
+    except http.client.HTTPException as e:
+        # Protocol-level failures below urllib's own error hierarchy:
+        # IncompleteRead (connection closed before Content-Length bytes
+        # were fully read), BadStatusLine, LineTooLong, etc. Confirmed
+        # against Python's own docs before assuming coverage: these are
+        # HTTPException subclasses, NOT OSError subclasses (the one
+        # exception, RemoteDisconnected, inherits both -- caught here
+        # first since this branch comes before the OSError catch-all,
+        # giving it the more specific message). Would otherwise have
+        # slipped past the OSError catch-all below exactly the way
+        # TimeoutError slipped past URLError.
+        raise RuntimeError(f"POST {path} failed: HTTP protocol error: {e}") from e
     except OSError as e:
         # Catch-all for other socket-level failures that also don't
         # route through urllib.error (connection reset, broken pipe,
