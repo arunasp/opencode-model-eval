@@ -31,7 +31,7 @@
 #                                     and results_dirs)
 
 .PHONY: help eval build server-up server-down server-logs auth \
-        tf-init tf-plan tf-apply tf-destroy tf-output
+        tf-init tf-plan tf-apply tf-destroy tf-output tf-eval
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -50,6 +50,7 @@ help:
 	@echo "make tf-destroy                    terraform destroy (interactive confirm)"
 	@echo "make tf-destroy AUTO_APPROVE=1      terraform destroy -auto-approve"
 	@echo "make tf-output                     terraform output"
+	@echo "make tf-eval                       cloud eval run (MODEL=provider/id, omit for live discovery, DRY_RUN=1 to preview)"
 
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
@@ -87,3 +88,11 @@ tf-destroy:
 
 tf-output:
 	cd terraform && terraform output
+
+# Cloud eval run against Terraform-provisioned infra (server/network/
+# volume must already exist -- run tf-apply first). Mirrors the `eval`
+# target above exactly: MODEL is optional (omit it for live discovery
+# instead of a fixed matrix entry), DRY_RUN prints the resolved docker
+# commands without running them.
+tf-eval:
+	@bash scripts/tf-select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
