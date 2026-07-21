@@ -331,6 +331,24 @@ validated vs. new/unproven.
 
 ## Running
 
+**Quickest path** -- interactive picker, opencode `/models`-style, wraps
+everything below into one step:
+
+```bash
+bash scripts/select-and-run-eval.sh                # menu: pick a number
+bash scripts/select-and-run-eval.sh hy3             # skip the menu, run directly by name
+bash scripts/select-and-run-eval.sh --dry-run hy3   # print the docker-compose command, don't run it
+```
+
+Local Ollama options are derived live from `docker-compose config
+--services`, so this can't drift from the actual configured service
+list. Cloud options are a small mirrored copy of
+`terraform/variables.tf`'s `var.models` -- keep both in sync manually
+if you add a cloud model there, not worth an HCL-parsing dependency for
+3 fixed entries.
+
+**Manual path**, same steps this script automates:
+
 ```bash
 # 1. Start the server -- one, persistent, shared across every model under test
 docker compose up -d server
