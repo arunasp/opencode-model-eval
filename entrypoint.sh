@@ -35,11 +35,25 @@ if ! command -v opencode >/dev/null 2>&1; then
   fail "opencode binary not found on PATH — base image contract has changed, re-verify against opencode.ai/docs"
 fi
 
-if [ ! -f "${AUTH_PATH}" ]; then
-  fail "credentials not found at ${AUTH_PATH} — mount your host auth.json read-only to this path (see README)"
+mode="${1:-serve}"
+
+# Credentials are NOT required for every mode. `serve` keeps the
+# requirement -- the shared server routes BOTH local and cloud
+# provider requests, so it needs to be ready for either. `eval-client`
+# only needs it when targeting a real cloud provider: Ollama needs no
+# authentication at all (config's "apiKey": "ollama" is a placeholder
+# string, not a credential), so an eval-client run specifically
+# targeting local/ollama has nothing to check credentials against.
+# Every other eval-client target (opencode, deepseek, zhipu, ...)
+# still requires it, same as before.
+needs_auth=true
+if [ "${mode}" = "eval-client" ] && [ "${OPENCODE_MODEL_PROVIDER:-}" = "local/ollama" ]; then
+  needs_auth=false
 fi
 
-mode="${1:-serve}"
+if [ "${needs_auth}" = "true" ] && [ ! -f "${AUTH_PATH}" ]; then
+  fail "credentials not found at ${AUTH_PATH} — mount your host auth.json read-only to this path (see README). Not required if you're running eval-client against local/ollama specifically."
+fi
 
 case "${mode}" in
   serve)

@@ -254,7 +254,12 @@ resource "docker_container" "local_ollama" {
 
   name  = "opencode-model-eval-${each.key}"
   image = docker_image.harness.image_id
-  depends_on = [terraform_data.auth_file_check]
+  # No depends_on = [terraform_data.auth_file_check] here, deliberately:
+  # entrypoint.sh's credential check is conditional on mode + provider
+  # now -- eval-client runs targeting local/ollama don't need real
+  # credentials, since Ollama needs no authentication at all (config's
+  # "apiKey": "ollama" is a placeholder string). server/discover/eval
+  # still depend on the check -- see their resource blocks.
 
   command = ["eval-client"]
 
@@ -278,12 +283,6 @@ resource "docker_container" "local_ollama" {
   volumes {
     host_path      = abspath("${var.harness_root}/task-suite")
     container_path = "/task-suite"
-    read_only      = true
-  }
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/auth-data/auth.json")
-    container_path = "/home/harness/.local/share/opencode/auth.json"
     read_only      = true
   }
 

@@ -29,9 +29,14 @@ x-local-ollama-defaults: &local-ollama-defaults
   # server -> Ollama networking note below. Linux-only; adjust for
   # Docker Desktop on macOS/Windows.
   network_mode: host
+  # No auth.json mount here, deliberately: entrypoint.sh's credential
+  # check is conditional on mode + provider now -- eval-client runs
+  # targeting local/ollama specifically don't need it, since Ollama
+  # needs no real authentication (config's "apiKey": "ollama" is a
+  # placeholder string, not a credential). Every other eval-client
+  # target still requires the mount -- see the `eval` service below.
   volumes:
     - ./task-suite:/task-suite:ro
-    - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
     - ./results:/results
 
 services:
