@@ -48,8 +48,31 @@ RUN if command -v apk >/dev/null 2>&1; then \
       exit 1; \
     fi
 
-RUN pip install --break-system-packages --no-cache-dir spacy onnxruntime tokenizers numpy \
-    && python3 -m spacy download en_core_web_sm
+RUN pip install --break-system-packages --no-cache-dir spacy \
+    && python3 -m spacy download en_core_web_sm \
+    || echo "WARN: spaCy/en_core_web_sm install failed -- negation-aware" \
+            "claim detection (axiom_cvv_verify.py) will fall back to" \
+            "its original, non-negation-aware behavior. Non-fatal by" \
+            "design: the code already handles this via try/except." >&2
+
+# Separate RUN, deliberately: onnxruntime has zero published wheels for
+# musllinux (Alpine) on ANY Python version, and none for Python 3.14 on
+# ANY platform, as of writing (confirmed against
+# microsoft/onnxruntime#25737, still open). Bundling this with spaCy's
+# install in one pip invocation meant onnxruntime's guaranteed failure
+# on Alpine+3.14 base images silently took spaCy down with it too, even
+# though spaCy itself had a working wheel available -- pip resolves a
+# single invocation's requirement set atomically. Splitting these
+# preserves whichever optional enhancement CAN install on a given base
+# image instead of an all-or-nothing failure across both.
+RUN pip install --break-system-packages --no-cache-dir onnxruntime tokenizers numpy \
+    || echo "WARN: onnxruntime/tokenizers install failed -- semantic" \
+            "action-detection fallback (axiom_cvv_verify.py) will fall" \
+            "back to marker-only backing detection. Non-fatal by" \
+            "design: the code already handles this via try/except. As" \
+            "of writing this is EXPECTED on Alpine (musllinux) base" \
+            "images and/or Python 3.14 -- onnxruntime has no published" \
+            "wheel for either (microsoft/onnxruntime#25737, open)." >&2
 
 # Pin HOME explicitly rather than relying on whatever user/home the base
 # image happens to ship with — removes the ambiguity of where
