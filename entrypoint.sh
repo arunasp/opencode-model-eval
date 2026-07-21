@@ -83,7 +83,20 @@ case "${mode}" in
     # --port/--hostname explicitly set: opencode's real defaults are
     # port=0 (random) and hostname=127.0.0.1 (loopback only) -- neither
     # works for a container another service needs to reach predictably.
-    exec opencode serve --port "${PORT}" --hostname "${HOSTNAME_BIND}"
+    # --print-logs: without this, opencode's structured logs only ever
+    # go to a file (~/.local/share/opencode/log/opencode.log) -- the
+    # actual error behind an HTTP 500 (e.g. ProviderModelNotFoundError)
+    # was invisible in `docker logs` and needed `docker exec ... cat`
+    # to find, live on Cyberdyne. Confirmed via opencode's own CLI docs
+    # and source (anomalyco/opencode#13158's excerpt shows
+    # `print: process.argv.includes("--print-logs")` reads this flag
+    # correctly) that this mirrors the same log stream to stderr,
+    # which `docker logs` captures directly. One known caveat, same
+    # source: --log-level doesn't fully propagate to the file-writing
+    # thread (stays INFO-capped there, open bug) -- --print-logs
+    # itself isn't affected by that same bug, so the mirroring works
+    # regardless, just capped at INFO detail rather than DEBUG.
+    exec opencode serve --port "${PORT}" --hostname "${HOSTNAME_BIND}" --print-logs
     ;;
   eval-client)
     shift || true
