@@ -226,7 +226,7 @@ resource "docker_container" "eval" {
 
   name  = "opencode-model-eval-eval-${each.key}"
   image = docker_image.harness.image_id
-  depends_on = [terraform_data.auth_file_check]
+  depends_on = [terraform_data.auth_file_check, docker_container.server]
 
   command = ["eval-client"]
 
@@ -268,7 +268,6 @@ resource "docker_container" "eval" {
     read_only      = true
   }
 
-  depends_on = [docker_container.server]
   # NOTE: Terraform's depends_on, like Compose's, only orders container
   # creation -- it does not wait for the server to actually be listening.
   # entrypoint.sh's eval-client mode polls before running, same gap
