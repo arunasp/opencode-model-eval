@@ -226,6 +226,29 @@ run the command above yourself unless you're on the Compose-only path,
 or want to see what's available first. Either way, key values never
 reach Terraform state.
 
+**If you're using the Compose path**, run this first instead of
+`extract-opencode-key.sh` directly:
+
+```bash
+bash scripts/ensure-auth-data.sh opencode deepseek zhipu
+```
+
+docker-compose (v1.29.2 confirmed, the legacy CLI) has no precondition/
+pre-flight hook mechanism, unlike Terraform's `terraform_data` +
+`precondition`, so this can't run automatically the way the Terraform
+path's does -- it's a script you run yourself, once, before
+`docker-compose up`/`run`. What it actually fixes: Docker's bind-mount
+behavior silently creates an EMPTY DIRECTORY at `auth-data/auth.json`
+if that path doesn't exist yet as a real file when a container first
+mounts it -- hit live during this project's own setup, every
+`server`/`discover`/`eval` container failing identically with
+"credentials not found" because the mount target was a phantom
+directory, not a missing file. `ensure-auth-data.sh` detects that
+exact case and clears it via `rmdir` (refuses on anything non-empty,
+won't delete real content), then runs the real extraction -- same
+script, same effect as running `extract-opencode-key.sh` directly, plus
+the one-time phantom-directory cleanup this specific failure mode needs.
+
 The structured test ladder ships with this repo, populated:
 `task-suite/test_ladder.json` — 9 categories, 25 tiers, escalating
 difficulty within each category. See `## Test ladder` below for what's
