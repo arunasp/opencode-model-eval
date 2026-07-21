@@ -1,5 +1,3 @@
-name: opencode-model-eval
-
 x-harness-defaults: &harness-defaults
   build:
     context: .
@@ -99,8 +97,19 @@ services:
         condition: service_healthy
     environment:
       OPENCODE_SERVER_URL: "http://server:4096"
-      OPENCODE_MODEL_PROVIDER: ${OPENCODE_MODEL_PROVIDER:?set this, e.g. from discover's output}
-      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:?set this, e.g. from discover's output}
+      # Empty default, not a required (:?) interpolation -- :? is
+      # validated by docker-compose at BUILD time across the WHOLE
+      # file, not just this service, which breaks
+      # `docker-compose build` (and even `docker-compose build server`
+      # -- confirmed on Cyberdyne with docker-compose v1/legacy, which
+      # validates interpolation file-wide regardless of which service
+      # was named). The actual "did you forget to set this" check
+      # already exists at the right layer: run_eval_client.py's
+      # main() does `if not provider or not model_id: FATAL` before
+      # doing anything -- empty string here reaches that check
+      # correctly and fails loudly at RUN time, not BUILD time.
+      OPENCODE_MODEL_PROVIDER: ${OPENCODE_MODEL_PROVIDER:-}
+      OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-}
     volumes:
       - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
