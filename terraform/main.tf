@@ -314,12 +314,6 @@ resource "docker_image" "jupyter" {
   }
 }
 
-# Separate named volume from opencode_log -- notebook authoring work
-# has no reason to share state with an actual eval run.
-resource "docker_volume" "jupyter_notebooks" {
-  name = "opencode-model-eval-jupyter-notebooks"
-}
-
 # Persistent, start/stop-controlled like docker_container.server --
 # NOT one-shot like discover/git_workspace, since this is meant to stay
 # up across an authoring session. See harness-control.sh's "Start/Stop
@@ -337,8 +331,13 @@ resource "docker_container" "jupyter" {
     external = var.jupyter_port
   }
 
+  # Host bind mount, not a named volume -- confirmed live that a named
+  # volume (the original design here) genuinely doesn't appear
+  # anywhere in the repo's host filesystem, same as opencode-log by
+  # design. Fine for an internal log nobody browses directly, wrong for
+  # notebooks someone actually wants to find/open/back up on the host.
   volumes {
-    volume_name    = docker_volume.jupyter_notebooks.name
+    host_path      = abspath("${var.harness_root}/notebooks")
     container_path = "/notebooks"
   }
 }

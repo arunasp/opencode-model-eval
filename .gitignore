@@ -1,6 +1,10 @@
 # Credentials — extracted by scripts/extract-opencode-key.sh, host-local only
 auth-data/
 
+# Jupyter notebook storage — host-local authoring artifacts, not source
+notebooks/*
+!notebooks/.gitkeep
+
 # Generated results — artifacts of a run, not source
 results/*
 !results/.gitkeep

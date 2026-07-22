@@ -203,9 +203,12 @@ services:
   # stage comment). Like `server`, this is meant to be started/stopped
   # explicitly (see harness-control.sh's "Start/Stop Jupyter" menu
   # entries and `make jupyter-up`/`jupyter-down`), not run per-task.
-  # Notebook storage is a dedicated named volume, separate from
-  # anything eval/discover/server touch -- authoring work here has no
-  # reason to share state with an actual eval run.
+  # Notebook storage is a host bind mount (./notebooks, gitignored) --
+  # NOT a Docker-managed named volume like opencode-log. Confirmed live
+  # that a named volume genuinely doesn't appear anywhere in the
+  # repo's host filesystem by design; that's fine for an internal log
+  # nobody needs to browse directly, but wrong for notebooks someone
+  # actually wants to find, open, or back up on the host.
   jupyter:
     build:
       context: .
@@ -217,7 +220,7 @@ services:
     ports:
       - "${JUPYTER_PORT:-8888}:8888"
     volumes:
-      - jupyter-notebooks:/notebooks
+      - ./notebooks:/notebooks
     restart: unless-stopped
 
   # Local Ollama-backed models. All five share x-local-ollama-defaults
@@ -269,8 +272,3 @@ services:
 # container network, never on the host filesystem directly.
 volumes:
   opencode-log:
-  # Persistent notebook storage for the jupyter service -- survives
-  # `docker-compose down`/container recreation, same reasoning as
-  # opencode-log: only needs to exist inside the Docker-managed volume
-  # layer, never as a direct host bind-mount.
-  jupyter-notebooks:
