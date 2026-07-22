@@ -27,6 +27,7 @@
 #   bash scripts/select-and-run-eval.sh hy3           # direct, by name, no menu
 #   bash scripts/select-and-run-eval.sh --dry-run hy3 # print the command, don't run it
 #   bash scripts/select-and-run-eval.sh cloud         # go straight to cloud discovery
+#   bash scripts/select-and-run-eval.sh opencode/hy3-free  # direct provider/id, no discovery at all
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -113,6 +114,22 @@ run_selected() {
 }
 
 if [ -n "$direct_name" ]; then
+  # provider/id shape (contains a /) -- direct model, no discovery at
+  # all. Matches tf-select-and-run-eval.sh's identical convention
+  # exactly, so a caller that already resolved a model itself (e.g.
+  # harness-control.sh, picking in its own pane rather than letting
+  # this script prompt from wherever it's invoked) can skip straight
+  # to running it here too. Local service names never contain a /, so
+  # there's no ambiguity with the names-array lookup below.
+  if [[ "$direct_name" == */* ]]; then
+    provider="${direct_name%%/*}"
+    model_id="${direct_name#*/}"
+    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+    if [ "$dry_run" = false ]; then
+      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
+    fi
+    exit 0
+  fi
   for i in "${!names[@]}"; do
     if [ "${names[$i]}" = "$direct_name" ]; then
       run_selected "$i"

@@ -11,10 +11,16 @@
 # Compose path's actual pattern: nothing is provisioned ahead of time
 # for "which model to run", it's resolved at invocation time.
 #
-# Three modes:
+# Four modes:
 #   - provider/id given directly (e.g. opencode/hy3-free): skips
 #     discovery entirely, same as discover_and_select_model.py's own
 #     --model flag.
+#   - --list-json: fetch the candidate list, print it, exit -- no
+#     selection, no eval-client run. For a caller (e.g.
+#     harness-control.sh) that wants to do the picking itself in its
+#     own context rather than letting this script prompt from
+#     wherever it happens to be invoked (e.g. a tmux pane other than
+#     the one showing the menu).
 #   - No model given, real terminal (`[ -t 0 ]`): the discover
 #     container runs non-interactively (--list-json, no -it, no TTY
 #     ever touches Docker) to fetch the live candidate list, then
@@ -32,6 +38,7 @@
 #   bash scripts/tf-select-and-run-eval.sh                       # live discovery (prompts on a real terminal)
 #   bash scripts/tf-select-and-run-eval.sh opencode/hy3-free       # direct, no discovery
 #   bash scripts/tf-select-and-run-eval.sh --dry-run opencode/hy3-free  # print, don't run
+#   bash scripts/tf-select-and-run-eval.sh --list-json              # candidates only, no run
 #
 # Requires: `terraform apply` already run at least once (server image
 # built, network + volume created) -- this script runs plain `docker`
@@ -57,10 +64,12 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 dry_run=false
+list_json=false
 direct_model=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=true ;;
+    --list-json) list_json=true ;;
     *) direct_model="$arg" ;;
   esac
 done
@@ -99,6 +108,17 @@ discover_base_cmd=(docker run --rm
   "${IMAGE}"
   /usr/local/bin/discover_and_select_model.py
 )
+
+# --list-json: fetch the candidate list and exit -- no selection, no
+# eval-client run. For a caller (e.g. harness-control.sh) that wants
+# to do the actual picking itself, in its own context, rather than
+# letting this script's own resolve-and-run flow prompt interactively
+# from wherever this script happens to be invoked. Reuses
+# discover_base_cmd rather than re-deriving the same image/network/
+# volume names a second time elsewhere.
+if [ "${list_json}" = true ]; then
+  exec "${discover_base_cmd[@]}" --list-json
+fi
 
 # --- Step 1: resolve provider/model -------------------------------------
 if [ -n "${direct_model}" ]; then

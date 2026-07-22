@@ -17,13 +17,22 @@
 # parallel on purpose -- see README's "Two deployment paths" section):
 #   - Deploy harness  -> `make tf-apply` or `docker-compose up -d server`
 #   - Remove harness  -> `make tf-destroy` or `docker-compose down`
-#   - Run an eval     -> delegates to scripts/tf-select-and-run-eval.sh
-#                        or scripts/select-and-run-eval.sh, which
-#                        already handle provider/model picking (and,
-#                        on the Compose side, local-vs-cloud) via
-#                        scripts/lib/host-model-picker.sh -- this
-#                        script doesn't duplicate that, just gets you
-#                        there with one less thing to remember.
+#   - Run an eval     -> provider/model (and, on the Compose side,
+#                        local-vs-cloud) picking happens RIGHT HERE,
+#                        in this menu pane, via
+#                        scripts/lib/host-model-picker.sh's
+#                        host_arrow_menu -- then the resolved model is
+#                        passed directly to scripts/tf-select-and-run-eval.sh
+#                        or scripts/select-and-run-eval.sh (both accept
+#                        a direct provider/id argument that skips their
+#                        own discovery/picker entirely). Deliberately
+#                        NOT delegated to those scripts' own interactive
+#                        pickers: since the actual eval run happens in
+#                        the OUTPUT pane (tmux send-keys), a nested
+#                        picker there would render somewhere other than
+#                        the menu pane, needing a pane switch just to
+#                        use it -- confirmed live as real friction with
+#                        an earlier version of this design.
 # Plus a fourth, non-action entry:
 #   - View logs       -> browse and open a past action's saved log,
 #                        opened in `less` in the output pane.
@@ -163,12 +172,79 @@ remove() {
   esac
 }
 
+# pick_cloud_model_terraform / pick_cloud_model_compose
+# Fetch the candidate list directly (not via run_in_output_pane --
+# this is a quick JSON fetch, not something worth streaming/logging)
+# and run host_model_picker right here in the menu pane. Prints
+# "provider/id" on success; returns 1 (no output) if the fetch fails
+# or the picker is cancelled. This is the whole point of this
+# rewrite: picking never happens inside a command injected into the
+# output pane, so there's never a nested interactive prompt rendering
+# somewhere the menu pane isn't -- confirmed live as real friction
+# with the previous design (tf-select-and-run-eval.sh's own picker
+# rendering in the output pane, requiring a pane switch to use it).
+pick_cloud_model_terraform() {
+  local candidates_json
+  candidates_json="$(bash scripts/tf-select-and-run-eval.sh --list-json)" || {
+    echo "Failed to fetch candidates." >&2
+    return 1
+  }
+  host_model_picker "${candidates_json}"
+}
+
+pick_cloud_model_compose() {
+  local candidates_json
+  candidates_json="$(docker-compose run --rm -T discover --list-json)" || {
+    echo "Failed to fetch candidates." >&2
+    return 1
+  }
+  host_model_picker "${candidates_json}"
+}
+
+run_eval_terraform() {
+  # tf-select-and-run-eval.sh only ever does cloud models -- local
+  # Ollama models on the Terraform path are separate
+  # docker_container.local_ollama resources (see terraform/main.tf),
+  # not something this script runs an eval against.
+  local picked
+  picked="$(pick_cloud_model_terraform)" || { echo "Cancelled." >&2; return 1; }
+  run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh "${picked}"
+}
+
+run_eval_compose() {
+  # Mirrors select-and-run-eval.sh's own top-level menu (cloud vs each
+  # local service), but built and shown HERE instead of letting that
+  # script show it -- same reasoning as pick_cloud_model_terraform.
+  local -a options=("cloud")
+  local svc
+  while IFS= read -r svc; do
+    [ -z "${svc}" ] && continue
+    options+=("${svc}")
+  done < <(docker-compose config --services 2>/dev/null | grep -v -E '^(server|discover|eval)$' || true)
+
+  local picked_target
+  picked_target="$(host_arrow_menu "Which model?" "${options[@]}")" || {
+    echo "Cancelled." >&2
+    return 1
+  }
+
+  if [ "${picked_target}" = "cloud" ]; then
+    local picked
+    picked="$(pick_cloud_model_compose)" || { echo "Cancelled." >&2; return 1; }
+    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}"
+  else
+    # Local service name -- already fully non-interactive (no
+    # discovery, no picker involved), runs directly.
+    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked_target}"
+  fi
+}
+
 run_eval() {
   local backend
   backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
   case "$backend" in
-    Terraform) run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh ;;
-    "Docker Compose") run_logged "eval-compose" bash scripts/select-and-run-eval.sh ;;
+    Terraform) run_eval_terraform ;;
+    "Docker Compose") run_eval_compose ;;
   esac
 }
 
