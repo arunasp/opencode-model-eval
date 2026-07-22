@@ -175,25 +175,28 @@ against a real run before you trust the pipeline:
     fail-fast check backing it up.** Hit live on Cyberdyne: Docker
     silently creates an empty directory at a bind-mount source path
     that doesn't exist yet rather than erroring, so every container
-    that mounts this file (`server`, `discover`, `eval` x3,
-    `local_ollama` x5 -- all 12) hit an identical "credentials not
+    that mounts this file hit an identical "credentials not
     found" failure the first time this ran. `data.external.auth_keys`
     (terraform/main.tf) now runs `scripts/tf-extract-auth-keys.sh` --
-    a wrapper around `scripts/extract-opencode-key.sh` -- automatically
-    on `plan`/`apply`, deriving the needed provider list from
-    `var.models` rather than a second hardcoded copy. **Security
+    a wrapper around `scripts/extract-opencode-key.sh --all` --
+    automatically on `plan`/`apply`. This used to derive a provider
+    list from `var.models`; that variable (and the static
+    `docker_container.eval` matrix it fed) is gone now in favor of
+    live discovery (see "Known gaps" below), so extraction just copies
+    every configured provider key instead -- still narrower than
+    mounting the real, unscoped `auth.json` directly, but no longer
+    tied to a fixed model list. **Security
     property, verified against `hashicorp/external`'s own docs, not
     assumed:** "All output values are stored in the Terraform state
     file" -- so the wrapper is deliberately designed to print ONLY a
-    `{"status":"ok","keys_extracted":"..."}` confirmation to stdout,
+    `{"status":"ok","mode":"all"}`
+    confirmation to stdout,
     never real key material; the actual secret write happens entirely
     inside `extract-opencode-key.sh`, writing straight to
     `auth-data/auth.json` on disk, never read back into a Terraform
     value. Verified end-to-end in a sandbox (fake source `auth.json`,
     real script invocation, confirmed stdout contains no secrets while
-    the real file on disk does) and the `distinct([for m in var.models
-    : m.provider])` expression tested in isolation against real
-    `tofu apply` output, not assumed from HCL familiarity.
+    the real file on disk does).
     `terraform_data.auth_file_check`'s `fileexists()`-based
     precondition (documented to hard-error, not return false, if the
     path is a directory -- the exact phantom-directory bug) stays as a
@@ -352,8 +355,8 @@ needs, rather than mounting your real (likely multi-provider) auth.json
 wholesale:
 
 ```bash
-bash scripts/extract-opencode-key.sh                              # lists provider keys in your real auth.json
-bash scripts/extract-opencode-key.sh opencode deepseek zhipu      # writes auth-data/auth.json with exactly these 3
+bash scripts/extract-opencode-key.sh          # lists provider keys in your real auth.json
+bash scripts/extract-opencode-key.sh --all    # writes auth-data/auth.json with every configured key
 ```
 
 This runs on the host, outside both Compose and Terraform — key values
@@ -361,10 +364,11 @@ never get read into Terraform state or a Compose env file.
 
 **If you're using the Terraform path**, this now happens automatically
 on `plan`/`apply` via `data.external.auth_keys` (see README caveat
-#10) — the provider list comes from `var.models`, so you don't need to
-run the command above yourself unless you're on the Compose-only path,
-or want to see what's available first. Either way, key values never
-reach Terraform state.
+#10) — it always extracts `--all` now (no fixed provider list to derive
+from since `var.models` is gone, see "Known gaps" below), so you don't
+need to run the command above yourself unless you're on the
+Compose-only path, or want to see what's available first. Either way,
+key values never reach Terraform state.
 
 **If you're using the Compose path**, run this first instead of
 `extract-opencode-key.sh` directly:
@@ -407,10 +411,24 @@ bash scripts/select-and-run-eval.sh --dry-run hy3   # print the docker-compose c
 
 Local Ollama options are derived live from `docker-compose config
 --services`, so this can't drift from the actual configured service
-list. Cloud options are a small mirrored copy of
-`terraform/variables.tf`'s `var.models` -- keep both in sync manually
-if you add a cloud model there, not worth an HCL-parsing dependency for
-3 fixed entries.
+list. Cloud is a single `cloud` entry standing in for live discovery
+via `opencode models --verbose` (the `discover` service) — not a fixed
+list anymore; see "Known gaps" below for why the earlier
+per-model-hardcoded design (both here and in Terraform's now-deleted
+`var.models`) was dropped. Discovery itself prompts interactively for
+which model to use when run with a real terminal attached, and falls
+back to an unattended size-heuristic auto-pick otherwise (CI, piped
+input) — see `scripts/discover_and_select_model.py --help` for the
+`--interactive`/`--auto` overrides.
+
+Terraform-provisioned infra has the equivalent single-step wrapper:
+
+```bash
+bash scripts/tf-select-and-run-eval.sh                       # live discovery (prompts if you have a terminal)
+bash scripts/tf-select-and-run-eval.sh opencode/hy3-free       # skip discovery, run directly
+bash scripts/tf-select-and-run-eval.sh --dry-run opencode/hy3-free  # print the docker commands, don't run
+# equivalently: make tf-eval / make tf-eval MODEL=opencode/hy3-free / make tf-eval DRY_RUN=1
+```
 
 **Manual path**, same steps this script automates:
 
@@ -458,12 +476,14 @@ triggers):
 cd terraform
 terraform init
 terraform apply
-$(terraform output -raw next_step)   # tails server + each model's eval run
+bash ../scripts/tf-select-and-run-eval.sh   # live discovery (or MODEL=... / make tf-eval)
 terraform destroy
 ```
-Every `docker_container.eval[model]` shares the same `docker_image.harness`
-now — adding a model to `var.models` costs zero rebuild, just a new
-container with different runtime env vars.
+Cloud eval runs aren't a Terraform resource (see "Known gaps" below for
+why) — `docker_image.harness` is what Terraform manages and shares
+across the server, `discover`, and local Ollama containers; a cloud
+eval run is a one-off `docker run` against that same image with
+whatever provider/model was resolved.
 
 Results land in `results/<provider_modelid>/`, structured per
 category/tier rather than a single flat manifest:
@@ -550,8 +570,25 @@ A category's ceiling is reported even on a tier-1 fail (ceiling = 0).
   weights committed in-repo (deliberately avoids a Hugging Face/Ollama
   dependency) — if your build environment only allowlists package
   registries and not `github.com`, this step will fail.
-- **`docker_container.eval`'s and Compose's `eval` service's `depends_on`
+- **Compose's `eval` service's `depends_on`
   only waits for the server container to start, not for it to actually
   be listening** — `entrypoint.sh`'s `eval-client` mode polls the server
   before running to cover this gap; if the server takes unusually long to
   come up, the 30-attempt/2-second poll (60s total) may need lengthening.
+  (The equivalent Terraform-side wait was on `docker_container.eval`,
+  which no longer exists — see the next point.)
+- **Cloud eval runs are deliberately outside Terraform's state entirely.**
+  Terraform provisions the shared infra (server, network, volumes, image,
+  `docker_container.discover`, local Ollama containers) but a cloud eval
+  run itself — `make tf-eval` /
+  `scripts/tf-select-and-run-eval.sh` — is a plain `docker run` from a
+  script, tracked nowhere in `terraform.tfstate`. This replaced an
+  earlier design with one static `docker_container.eval[key]` per
+  hardcoded cloud model; that matrix covered exactly 3 entries, and all
+  3 turned out broken or uncredentialed in practice (see git history:
+  "drop static var.models/docker_container.eval cloud matrix"), so a
+  fixed list was actively worse than not tracking it at all. The
+  trade-off: `terraform plan`/`terraform show` will never tell you
+  whether a cloud eval container is currently running — that's normal,
+  not a bug, and the same trade-off Compose's own `eval` service already
+  made (it was never a tracked resource either, just `docker-compose run`).
