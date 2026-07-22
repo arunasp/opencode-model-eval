@@ -258,12 +258,13 @@ def abort_session(base_url: str, session_id: str) -> bool:
     return bool(result)
 
 
-def send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str) -> dict:
+def send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
+                  timeout: int = 300) -> dict:
     body = {
         "model": {"providerID": provider, "modelID": model_id},
         "parts": [{"type": "text", "text": text}],
     }
-    return http_post(base_url, f"/session/{session_id}/message", body)
+    return http_post(base_url, f"/session/{session_id}/message", body, timeout=timeout)
 
 
 def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
@@ -640,6 +641,47 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
     return {"category": cat_id, "ceiling": ceiling, "tiers": tier_results, "progress_dots": "".join(summary_dots)}
 
 
+WARMUP_TIMEOUT_S = float(os.environ.get("OPENCODE_WARMUP_TIMEOUT_S", "600"))  # 10 min default
+
+
+def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
+    """Sends one throwaway message to force Ollama to load the model
+    into memory BEFORE the real test ladder starts, so a cold-start
+    load (Ollama's documented default: unloads a model 5min after its
+    last use, then the next request pays the full weight-load time
+    before generating anything) doesn't eat into a real tier's own
+    300s budget. Confirmed live: a fresh local/ollama run's very first
+    tier timed out at exactly 300s with the server reachable and the
+    session genuinely busy the whole time -- consistent with cold-load
+    time alone consuming the budget, not a connectivity problem.
+
+    Best-effort and silent on failure -- if warm-up itself times out or
+    errors, that's not fatal here; the real test ladder will surface
+    the same underlying problem with proper category/tier context
+    instead. Not called for cloud providers -- there's no cold-load
+    concept for a hosted API, and doing this unconditionally would
+    waste a request/tokens on every cloud run for no benefit.
+    """
+    if provider != "local/ollama":
+        return
+    print(f"[eval-client] warming up {provider}/{model_id} before the test ladder "
+          f"(up to {WARMUP_TIMEOUT_S:.0f}s -- Ollama cold-start on a large model can "
+          f"take a while)...", file=sys.stderr)
+    try:
+        session_id = create_session(base_url)
+        send_message(base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
+        print("[eval-client] warm-up complete", file=sys.stderr)
+    except RuntimeError as e:
+        print(f"[eval-client] warm-up failed/timed out ({e}) -- proceeding to the real "
+              f"test ladder anyway, which will surface the same problem with proper "
+              f"context if it's genuine", file=sys.stderr)
+    finally:
+        try:
+            abort_session(base_url, session_id)
+        except (RuntimeError, NameError):
+            pass  # best-effort -- session_id may not exist if create_session itself failed
+
+
 def main() -> int:
     base_url = os.environ.get("OPENCODE_SERVER_URL", "http://server:4096")
     # 4096 is THIS project's chosen fixed port, set explicitly when
@@ -687,6 +729,8 @@ def main() -> int:
 
     print(f"[eval-client] target server: {base_url}", file=sys.stderr)
     print(f"[eval-client] model under test: {provider}/{model_id}", file=sys.stderr)
+
+    warm_up_local_model(base_url, provider, model_id)
 
     report = {"model": f"{provider}/{model_id}", "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
               "categories": []}
