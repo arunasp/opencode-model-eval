@@ -400,8 +400,35 @@ validated vs. new/unproven.
 
 ## Running
 
-**Quickest path** -- interactive picker, opencode `/models`-style, wraps
-everything below into one step:
+**Primary entry point** -- `harness-control.sh`, a persistent tmux-based
+menu (30% menu pane / 70% output pane):
+
+```bash
+bash harness-control.sh
+```
+
+Requires a real terminal and `tmux` (hard dependency, no fallback --
+run it directly, not piped or from CI). All model/provider picking
+happens in the menu pane itself via `scripts/lib/host-model-picker.sh`'s
+host-side arrow-key/j-k picker -- never inside a container, never a
+nested prompt rendering in the output pane. Menu options: Deploy
+harness / Remove harness (either backend, picked at the start of the
+action) / Run an eval / View logs (past action/session logs) / Browse
+results (`results/<model>/report.json` + per-category CVV output,
+distinct from View logs) / Start Jupyter / Stop Jupyter (a persistent
+authoring server for hand-writing custom-test notebooks -- see
+`config/opencode.git-workspace.json` and the `jupyter` service/Dockerfile
+stage for what each of those is for) / Quit.
+
+This wraps the same underlying scripts described below (`make tf-apply`,
+`docker-compose up -d server`, `select-and-run-eval.sh`,
+`tf-select-and-run-eval.sh`) -- it's a control surface over them, not a
+separate mechanism. Everything from here down documents those
+underlying scripts directly, for scripted/non-interactive use or if you
+don't want the tmux UI.
+
+**Quickest scripted path** -- interactive picker, opencode `/models`-style,
+wraps everything below into one step:
 
 ```bash
 bash scripts/select-and-run-eval.sh                # menu: pick a number
@@ -553,10 +580,19 @@ A category's ceiling is reported even on a tier-1 fail (ceiling = 0).
 
 ## Known gaps / not yet handled by this harness
 
-- **Permissions are locked down** (`edit: deny`, `bash: deny` in
-  `opencode.base.json`) — fine for pure reasoning/knowledge tasks, but
-  this blocks agentic/tool-use capability tests. A second config profile
-  with permissions opened up is needed before running that category.
+- **Agentic/tool-use tasks now have a path, but it isn't wired into the
+  test ladder yet.** `server`/`eval`/`discover`/`local-ollama` still
+  deny `edit`/`bash` outright (`opencode.base.json`) -- fine for pure
+  reasoning/knowledge tasks. The new `git-workspace` role
+  (`config/opencode.git-workspace.json`, `bash: allow`/`edit: allow`,
+  made safe by mounting nothing but read-only `auth.json` rather than
+  by narrowing the command set) is a real, isolated place to run
+  agentic/coding tasks, but it's a standalone one-shot container
+  (`docker-compose run --rm git-workspace` / `make tf-git-workspace`),
+  not a `test_ladder.json` category yet -- `coding`,
+  `instruction_following`, and `failure_diagnostics_and_fixing` tiers
+  still can't actually exercise real tool use through the structured
+  run.
 - **`extract_reply()`'s tool-call part shape is still an inference** —
   the empirical test that confirmed the text-part response shape never
   triggered a tool call, so that specific branch (`"tool" in
