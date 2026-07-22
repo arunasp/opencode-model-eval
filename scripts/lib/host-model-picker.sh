@@ -120,6 +120,19 @@ host_arrow_menu() {
   # returning, instead.
   trap 'stty "$old_stty" < /dev/tty; echo "Cancelled." >&2; exit 130' INT
 
+  # Clear the pane before drawing -- fixes real friction reported
+  # live: this function's OWN internal redraw (during navigation)
+  # already stays pinned in place, but every SEPARATE call to
+  # host_arrow_menu (backend picker -> provider picker -> model
+  # picker -> back to the main menu, etc.) used to just print fresh
+  # content below whatever the previous call left on screen, so the
+  # pane's visible transcript grew without bound across a session
+  # instead of staying fixed -- you had to scroll to find the current
+  # menu. Clearing here, once per call, keeps every distinct menu
+  # pinned at a fixed position regardless of how many stages came
+  # before it in the same pane.
+  printf '\033[2J\033[H' >&2
+
   local rows_printed=0
   _host_arrow_menu_draw header options "$idx" rows_printed
   while true; do
