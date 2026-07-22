@@ -9,16 +9,15 @@ image only apt-installs bare python3 with no confirmed TUI-capable
 terminal setup. Three modes:
 
   --model provider/id   Skip discovery entirely, use this model. Primary
-                         path for reproducible runs -- the existing named
-                         compose services (hy3, deepseek-v4-pro, glm-5-2,
-                         gemma4-local, nemotron-3-nano-local,
-                         qwen3-coder-local, qwen3-coder-fixed-local,
-                         qwen2.5-coder-local) already pass this as a
-                         runtime env var via docker-compose/terraform,
-                         not a Docker build arg (see README's "Why this
-                         replaced an earlier per-model build design").
-                         This flag is for ad-hoc runs against something
-                         not in that fixed list.
+                         path for reproducible runs -- the generic `eval`
+                         Compose service / tf-select-and-run-eval.sh
+                         already pass this as a runtime env var
+                         (OPENCODE_MODEL_PROVIDER/OPENCODE_MODEL_ID),
+                         cloud or local/ollama alike, not a Docker build
+                         arg or a per-model service (see README's "Why
+                         this replaced an earlier per-model build
+                         design"). This flag is for ad-hoc runs against
+                         something not resolved via that path.
   --list-json            Query `opencode models --verbose`, print every
                          free/non-excluded candidate as a JSON array to
                          stdout (one object per candidate: provider,

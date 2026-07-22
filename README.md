@@ -114,13 +114,13 @@ against a real run before you trust the pipeline:
    opencode knows about whatever's actually installed on the host
    right now -- fixes config staleness (a model pulled/removed on
    Cyberdyne shows up without editing JSON). It does NOT decide which
-   models the eval containers below (`gemma4-local`,
-   `qwen3-coder-local`, etc.) actually run the test suite against --
-   that's still the explicit `docker-compose.yml`/`terraform` service
-   list, unaffected by discovery. Add a sixth Ollama model on the
-   host and the provider auto-discovers it (opencode could route to
-   it manually), but you still need a new eval-client service entry
-   to run the test ladder against it automatically. Discovery
+   model an eval run actually targets -- that's resolved at
+   invocation time (`OPENCODE_MODEL_ID=... docker compose run --rm
+   eval`, or `scripts/select-and-run-eval.sh`'s picker), reading the
+   SAME `provider["local/ollama"].models` keys discovery just
+   refreshed. Add a sixth Ollama model on the host and the provider
+   auto-discovers it -- it's immediately selectable, no new service or
+   terraform resource needed. Discovery
    degrades gracefully: if Ollama's unreachable at server startup,
    the baked-in static 5-model list is used unchanged, not a hard
    failure -- tested against a real local HTTP server standing in for
@@ -480,18 +480,22 @@ docker compose run --rm discover python3 /usr/local/bin/discover_and_select_mode
 export $(cat results/discovered-model.env | xargs)
 docker compose run --rm eval
 
-# Local Ollama models (all five share the same harness image):
-docker compose run --rm gemma4-local
-docker compose run --rm nemotron-3-nano-local
-docker compose run --rm qwen3-coder-local
-docker compose run --rm qwen3-coder-fixed-local
-docker compose run --rm qwen2.5-coder-local
-# network_mode: host, Linux only; start Ollama on the host first, with
-# OLLAMA_HOST=0.0.0.0:11434 (its default, loopback-only, is NOT reachable
-# from the server container's host.docker.internal route). Unverified
-# beyond "resolves on paper" -- no Docker/Ollama access in the
+# Local Ollama models (same harness image and `eval` service as cloud --
+# just set OPENCODE_MODEL_PROVIDER=local/ollama instead):
+docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=gemma4:31b eval
+docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=nemotron-3-nano:30b eval
+docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=qwen3-coder:30b eval
+docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=qwen3-coder-fixed:30b eval
+docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=qwen2.5-coder:7b eval
+# or just: bash scripts/select-and-run-eval.sh   (interactive picker, both cloud and local)
+# Start Ollama on the host first, with OLLAMA_HOST=0.0.0.0:11434 (its
+# default, loopback-only, is NOT reachable from the `server` container's
+# host.docker.internal route -- this is `server`'s own reach-out to
+# Ollama, unrelated to how the eval-client container above reaches
+# `server` itself, which is the normal bridge network same as cloud).
+# Unverified beyond "resolves on paper" -- no Docker/Ollama access in the
 # environment this was authored in; confirm end-to-end on real hardware
-# before trusting results from these five.
+# before trusting local-model results.
 ```
 
 `discover_and_select_model.py`'s free-tier heuristic (cost field absent
