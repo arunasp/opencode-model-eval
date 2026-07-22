@@ -300,37 +300,60 @@ view_logs() {
 # not action/session logs. Two levels: pick a model, then pick either
 # its report.json summary or drill into one category's raw output
 # files. Read-only, same `less -R` open pattern as view_logs.
+# browse_results -- distinct from view_logs: browses actual evaluation
+# RESULTS (report.json + per-category CVV output), not action/session
+# logs. Two levels: pick a model, then pick either its report.json
+# summary or drill into one category's raw output files. Read-only,
+# same `less -R` open pattern as view_logs.
 browse_results() {
-  local -a models=()
+  # Models are derived from wherever report.json actually lives, not
+  # from a fixed depth under results/ -- confirmed live that this
+  # varies by backend: results/<model_slug>/report.json (Compose/cloud
+  # eval, flat) vs results/local/<model_slug>/report.json (Terraform's
+  # local-model containers, one level deeper). A maxdepth-1 listing
+  # instead picked up results/local and results/discovered themselves
+  # (no report.json in either) as if they were models, landing on a
+  # silent dead end when picked.
+  local -a model_dirs=()
   if [ -d results ]; then
-    while IFS= read -r d; do
-      models+=("$(basename "$d")")
-    done < <(find results -mindepth 1 -maxdepth 1 -type d ! -name logs | sort)
+    while IFS= read -r report; do
+      model_dirs+=("$(dirname "$report")")
+    done < <(find results -mindepth 2 -name report.json | sort)
   fi
-  if [ "${#models[@]}" -eq 0 ]; then
-    echo "No results yet -- run an eval first." >&2
+  if [ "${#model_dirs[@]}" -eq 0 ]; then
+    run_in_output_pane \
+      "echo 'No results yet -- run an eval first.'; tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
     return 1
   fi
 
-  local model
-  model="$(host_arrow_menu "Pick a model's results:" "${models[@]}")" || return 1
+  local -a display=()
+  local d
+  for d in "${model_dirs[@]}"; do
+    display+=("${d#results/}")
+  done
 
-  local report="results/${model}/report.json"
-  local -a options=()
-  [ -f "${report}" ] && options+=("report.json (summary)")
+  local picked_rel
+  picked_rel="$(host_arrow_menu "Pick a model's results:" "${display[@]}")" || return 1
+  local model_dir="results/${picked_rel}"
+
+  local report="${model_dir}/report.json"
+  local -a options=("report.json (summary)")
   local -a categories=()
+  local c
   while IFS= read -r c; do
-    categories+=("$(basename "$c")")
-    options+=("category: $(basename "$c")")
-  done < <(find "results/${model}" -mindepth 1 -maxdepth 1 -type d | sort)
-
-  if [ "${#options[@]}" -eq 0 ]; then
-    echo "No report.json or category output found for ${model}." >&2
-    return 1
-  fi
+    # Skip categories with no files at all -- e.g. a category that hit
+    # quota-exhaustion on tier 1 and never got far enough to write a
+    # tier file. Offering these as options was itself a dead end
+    # (confirmed live from a real run where every category bailed out
+    # on tier 1's quota check before writing anything).
+    if [ -n "$(find "$c" -maxdepth 1 -type f -print -quit)" ]; then
+      categories+=("$(basename "$c")")
+      options+=("category: $(basename "$c")")
+    fi
+  done < <(find "${model_dir}" -mindepth 1 -maxdepth 1 -type d | sort)
 
   local picked
-  picked="$(host_arrow_menu "results/${model} -- what to view?" "${options[@]}")" || return 1
+  picked="$(host_arrow_menu "${model_dir} -- what to view?" "${options[@]}")" || return 1
 
   if [ "${picked}" = "report.json (summary)" ]; then
     run_in_output_pane \
@@ -342,13 +365,9 @@ browse_results() {
   local -a files=()
   while IFS= read -r f; do
     files+=("$f")
-  done < <(find "results/${model}/${cat_name}" -maxdepth 1 -type f | sort)
-  if [ "${#files[@]}" -eq 0 ]; then
-    echo "No files found in results/${model}/${cat_name}." >&2
-    return 1
-  fi
+  done < <(find "${model_dir}/${cat_name}" -maxdepth 1 -type f | sort)
   local selected_file
-  selected_file="$(host_arrow_menu "results/${model}/${cat_name} -- pick a file:" "${files[@]}")" || return 1
+  selected_file="$(host_arrow_menu "${model_dir}/${cat_name} -- pick a file:" "${files[@]}")" || return 1
   run_in_output_pane \
     "less -R $(printf '%q' "${selected_file}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
 }
