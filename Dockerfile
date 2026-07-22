@@ -221,6 +221,16 @@ RUN mkdir -p /notebooks && chmod -R 0777 /notebooks
 WORKDIR /notebooks
 
 EXPOSE 8888
+# ENTRYPOINT [] clears the inherited /usr/local/bin/entrypoint.sh from
+# the server/harness stages -- CMD alone does NOT override an inherited
+# ENTRYPOINT, it only supplies its arguments. Without this, the actual
+# command run was `entrypoint.sh jupyter lab --ip=0.0.0.0 ...`, and
+# entrypoint.sh's dispatcher only recognizes 'serve'/'eval-client' as
+# $1 -- 'jupyter' hit its "unknown mode" branch and exited 1
+# immediately, before Jupyter Lab ever started. Confirmed via a real
+# `terraform apply` log showing the container's own exit_code=1 before
+# this fix.
+ENTRYPOINT []
 # --no-browser: there's no browser inside this container to open.
 # --ip=0.0.0.0: opencode's own default-loopback caveat elsewhere in
 # this file applies here too -- Jupyter's own default is also
