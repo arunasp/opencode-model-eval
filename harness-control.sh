@@ -156,7 +156,7 @@ run_logged() {
 
 deploy() {
   local backend
-  backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
+  backend="$(pick_backend)" || return 1
   case "$backend" in
     Terraform) run_logged "deploy-terraform" make tf-apply ;;
     "Docker Compose") run_logged "deploy-compose" docker-compose up -d server ;;
@@ -165,7 +165,7 @@ deploy() {
 
 remove() {
   local backend
-  backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
+  backend="$(pick_backend)" || return 1
   case "$backend" in
     Terraform) run_logged "remove-terraform" make tf-destroy ;;
     "Docker Compose") run_logged "remove-compose" docker-compose down ;;
@@ -207,7 +207,7 @@ run_eval_terraform() {
   # docker_container.local_ollama resources (see terraform/main.tf),
   # not something this script runs an eval against.
   local picked
-  picked="$(pick_cloud_model_terraform)" || { echo "Cancelled." >&2; return 1; }
+  picked="$(pick_cloud_model_terraform)" || return 1
   run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh "${picked}"
 }
 
@@ -223,14 +223,11 @@ run_eval_compose() {
   done < <(docker-compose config --services 2>/dev/null | grep -v -E '^(server|discover|eval)$' || true)
 
   local picked_target
-  picked_target="$(host_arrow_menu "Which model?" "${options[@]}")" || {
-    echo "Cancelled." >&2
-    return 1
-  }
+  picked_target="$(host_arrow_menu "Which model?" "${options[@]}")" || return 1
 
   if [ "${picked_target}" = "cloud" ]; then
     local picked
-    picked="$(pick_cloud_model_compose)" || { echo "Cancelled." >&2; return 1; }
+    picked="$(pick_cloud_model_compose)" || return 1
     run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}"
   else
     # Local service name -- already fully non-interactive (no
@@ -241,7 +238,7 @@ run_eval_compose() {
 
 run_eval() {
   local backend
-  backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
+  backend="$(pick_backend)" || return 1
   case "$backend" in
     Terraform) run_eval_terraform ;;
     "Docker Compose") run_eval_compose ;;
@@ -260,10 +257,7 @@ view_logs() {
     return 1
   fi
   local selected
-  selected="$(host_arrow_menu "Pick a log to view (newest first):" "${logs[@]}")" || {
-    echo "Cancelled." >&2
-    return 1
-  }
+  selected="$(host_arrow_menu "Pick a log to view (newest first):" "${logs[@]}")" || return 1
   run_in_output_pane \
     "less -R $(printf '%q' "${selected}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
 }
