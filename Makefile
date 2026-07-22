@@ -80,10 +80,21 @@ tf-plan: tf-init
 # get running terraform directly, deliberately not skipped just
 # because it's wrapped in a make target. AUTO_APPROVE=1 opts in
 # explicitly for scripted/unattended use.
-tf-apply:
+#
+# Both depend on tf-init, matching tf-plan -- hit live: apply/destroy
+# failing with terraform's own "Inconsistent dependency lock file"
+# error (a provider required by the config with no version selected
+# in the lock file) has no automatic recovery without this, since
+# a plain `terraform init` (not even -upgrade) is what actually
+# resolves that specific error class -- confirmed against Terraform's
+# own documented dependency-installation behavior: a provider with no
+# existing lock-file selection gets one added on init, no -upgrade
+# needed for that case (-upgrade is only for re-resolving providers
+# that already have a selection to a newer version).
+tf-apply: tf-init
 	cd terraform && terraform apply $(if $(AUTO_APPROVE),-auto-approve)
 
-tf-destroy:
+tf-destroy: tf-init
 	cd terraform && terraform destroy $(if $(AUTO_APPROVE),-auto-approve)
 
 tf-output:
