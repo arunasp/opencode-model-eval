@@ -84,7 +84,11 @@ server-down:
 	docker-compose down
 
 server-logs:
-	docker-compose logs -f server
+	@if docker inspect opencode-model-eval-server >/dev/null 2>&1; then \
+		docker logs -f opencode-model-eval-server; \
+	else \
+		docker-compose logs -f server; \
+	fi
 
 jupyter-up:
 	docker-compose up -d jupyter
