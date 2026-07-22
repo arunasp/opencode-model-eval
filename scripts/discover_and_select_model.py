@@ -2,7 +2,7 @@
 """Discover available models from opencode's real provider pool, or
 select a specific provider/model directly.
 
-Two modes:
+Three modes:
   --model provider/id   Skip discovery entirely, use this model. Primary
                          path for reproducible runs -- the existing named
                          compose services (hy3, deepseek-v4-pro, glm-5-2,
@@ -14,9 +14,20 @@ Two modes:
                          replaced an earlier per-model build design").
                          This flag is for ad-hoc runs against something
                          not in that fixed list.
-  (no --model)           Query `opencode models --verbose`, filter to
-                         free/available candidates, exclude anything
-                         passed via --exclude, and select one.
+  (no --model, TTY)      Query `opencode models --verbose`, list every
+                         free/available candidate, and ask which one to
+                         use -- a real prompt, not a silent auto-pick.
+                         This is the default when stdin is an actual
+                         terminal, since a human is there to answer.
+  (no --model, no TTY)   Same query, but auto-selects via the existing
+                         size heuristic instead of prompting -- there's
+                         no one to answer a prompt in a non-interactive
+                         context (CI, a script piping input elsewhere),
+                         and blocking on input() there would hang
+                         forever rather than fail loudly. --auto forces
+                         this path even when stdin IS a tty (scripting
+                         convenience); --interactive forces the prompt
+                         even when stdin isn't detected as a tty.
 
 Uses `opencode models --verbose`, confirmed from opencode's CLI source
 (packages/opencode/src/cli/cmd/models.ts) to print, per model:
@@ -101,12 +112,20 @@ def is_free(record: dict) -> bool:
     return False
 
 
-def select_candidate(records: list[dict], exclude_ids: set[str]) -> dict | None:
-    free_candidates = [
-        r for r in records
-        if is_free(r) and r["full_id"] not in exclude_ids and r["provider"] != "opencode"
-    ]
-    if not free_candidates:
+def free_candidates(records: list[dict], exclude_ids: set[str]) -> list[dict]:
+    return [r for r in records if is_free(r) and r["full_id"] not in exclude_ids]
+
+
+def auto_select(records: list[dict], exclude_ids: set[str]) -> dict | None:
+    # opencode-routed entries excluded here specifically -- they've
+    # included known-broken candidates before (see README/memory: hy3
+    # confirmed non-functional). An unattended auto-pick shouldn't risk
+    # landing on one; a human choosing interactively can still pick one
+    # deliberately (see interactive_select, which does NOT apply this
+    # exclusion) since they can see it's an opencode-routed entry and
+    # decide for themselves.
+    candidates = [r for r in free_candidates(records, exclude_ids) if r["provider"] != "opencode"]
+    if not candidates:
         return None
 
     def size_hint(r: dict) -> int:
@@ -117,8 +136,33 @@ def select_candidate(records: list[dict], exclude_ids: set[str]) -> dict | None:
                 return score
         return 0
 
-    free_candidates.sort(key=size_hint, reverse=True)
-    return free_candidates[0]
+    candidates.sort(key=size_hint, reverse=True)
+    return candidates[0]
+
+
+def interactive_select(records: list[dict], exclude_ids: set[str]) -> dict | None:
+    candidates = sorted(free_candidates(records, exclude_ids), key=lambda r: r["full_id"])
+    if not candidates:
+        return None
+
+    print(f"Discovered {len(candidates)} free candidate(s):", file=sys.stderr)
+    for i, r in enumerate(candidates, start=1):
+        print(f"  {i:2d}) {r['full_id']}", file=sys.stderr)
+    print("   0) cancel", file=sys.stderr)
+
+    try:
+        choice = input("Select a number: ").strip()
+    except EOFError:
+        print("ERROR: stdin closed before a selection was made.", file=sys.stderr)
+        return None
+
+    if not choice.isdigit() or not (0 <= int(choice) <= len(candidates)):
+        print(f"ERROR: invalid selection '{choice}'.", file=sys.stderr)
+        return None
+    if int(choice) == 0:
+        print("Cancelled.", file=sys.stderr)
+        return None
+    return candidates[int(choice) - 1]
 
 
 def write_env_file(provider: str, model_id: str, path: Path) -> None:
@@ -140,6 +184,15 @@ def main() -> int:
         "--out", default="/results/discovered-model.env",
         help="path to write the resolved OPENCODE_MODEL_PROVIDER/ID env file",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--interactive", action="store_true",
+        help="Force the prompt-based picker even if stdin isn't detected as a real terminal.",
+    )
+    mode.add_argument(
+        "--auto", action="store_true",
+        help="Force the unattended size-heuristic auto-pick even if stdin IS a real terminal.",
+    )
     args = parser.parse_args()
 
     if args.model:
@@ -160,15 +213,22 @@ def main() -> int:
               "CLI output format may have changed -- inspect raw output.", file=sys.stderr)
         return 1
 
-    selected = select_candidate(records, exclude_ids)
+    want_interactive = args.interactive or (not args.auto and sys.stdin.isatty())
+    if want_interactive:
+        selected = interactive_select(records, exclude_ids)
+        mode_desc = "interactively"
+    else:
+        selected = auto_select(records, exclude_ids)
+        mode_desc = "via discovery (auto)"
+
     if selected is None:
-        print("ERROR: no free, non-excluded candidate found.", file=sys.stderr)
+        print("ERROR: no free, non-excluded candidate selected.", file=sys.stderr)
         print(f"Total models seen: {len(records)}. Excluded: {sorted(exclude_ids)}", file=sys.stderr)
         return 1
 
     write_env_file(selected["provider"], selected["model"], Path(args.out))
     print(selected["full_id"])
-    print(f"Selected via discovery: {selected['full_id']} (from {len(records)} candidates, "
+    print(f"Selected {mode_desc}: {selected['full_id']} (from {len(records)} candidates, "
           f"{len(exclude_ids)} excluded)", file=sys.stderr)
     return 0
 

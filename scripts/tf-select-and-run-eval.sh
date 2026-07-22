@@ -76,7 +76,16 @@ else
   discover_out_dir="${HARNESS_ROOT}/results/discovered"
   mkdir -p "${discover_out_dir}"
 
-  discover_cmd=(docker run --rm
+  discover_cmd=(docker run --rm)
+  # -it only when stdin is a real terminal: discover_and_select_model.py
+  # already falls back to auto-select on a non-tty stdin (CI, a piped
+  # invocation), so this only matters for the interactive-picker case --
+  # `docker run -it` itself errors out if attempted without a real
+  # terminal on this side.
+  if [ -t 0 ]; then
+    discover_cmd+=(-it)
+  fi
+  discover_cmd+=(
     --entrypoint python3
     -v "${HARNESS_ROOT}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro"
     -v "${discover_out_dir}:/results"
