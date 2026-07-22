@@ -159,6 +159,11 @@ run_logged() {
   mkdir -p "${LOG_DIR}"
   local log_file
   log_file="${LOG_DIR}/$(date +%Y%m%d-%H%M%S)-${label}.log"
+  # Deliberately NOT `local` -- exposes the exact log file path this
+  # invocation just wrote, so callers that want a companion file next
+  # to it (see run_eval_terraform/run_eval_compose's server-log
+  # capture) don't have to re-derive or guess the timestamp/name.
+  LAST_ACTION_LOG_FILE="${log_file}"
   local rc_file
   rc_file="$(mktemp)"
 
@@ -244,6 +249,28 @@ pick_cloud_model_compose() {
   host_model_picker "${candidates_json}"
 }
 
+# capture_server_log_since -- writes a slice of the persistent
+# server's own log (covering the window an eval action just ran in)
+# to a sibling file next to that action's own log, e.g.
+# results/logs/<timestamp>-eval-terraform.server.log next to
+# ...-eval-terraform.log. Best-effort: failure to capture (server not
+# running, wrong backend, etc.) never fails the caller.
+capture_server_log_since() {
+  local backend="$1" since="$2" log_file="$3"
+  local server_log_file="${log_file%.log}.server.log"
+  case "${backend}" in
+    Terraform)
+      docker logs --since "${since}" opencode-model-eval-server \
+        > "${server_log_file}" 2>&1 || true
+      ;;
+    "Docker Compose")
+      docker-compose logs --no-color --since "${since}" server \
+        > "${server_log_file}" 2>&1 || true
+      ;;
+  esac
+  echo "server log slice saved to ${server_log_file}" >&2
+}
+
 run_eval_terraform() {
   # tf-select-and-run-eval.sh only ever does cloud models -- local
   # Ollama models on the Terraform path are separate
@@ -251,7 +278,12 @@ run_eval_terraform() {
   # not something this script runs an eval against.
   local picked
   picked="$(pick_cloud_model_terraform)" || return 1
-  run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh "${picked}"
+  local since
+  since="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  local rc=0
+  run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh "${picked}" || rc=$?
+  capture_server_log_since "Terraform" "${since}" "${LAST_ACTION_LOG_FILE}"
+  return "${rc}"
 }
 
 run_eval_compose() {
@@ -268,15 +300,20 @@ run_eval_compose() {
   local picked_target
   picked_target="$(host_arrow_menu "Which model?" "${options[@]}")" || return 1
 
+  local since
+  since="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  local rc=0
   if [ "${picked_target}" = "cloud" ]; then
     local picked
     picked="$(pick_cloud_model_compose)" || return 1
-    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}"
+    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}" || rc=$?
   else
     # Local service name -- already fully non-interactive (no
     # discovery, no picker involved), runs directly.
-    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked_target}"
+    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked_target}" || rc=$?
   fi
+  capture_server_log_since "Docker Compose" "${since}" "${LAST_ACTION_LOG_FILE}"
+  return "${rc}"
 }
 
 run_eval() {
