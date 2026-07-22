@@ -642,6 +642,62 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
 
 
 WARMUP_TIMEOUT_S = float(os.environ.get("OPENCODE_WARMUP_TIMEOUT_S", "600"))  # 10 min default
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+# Reached directly from THIS container, not through opencode's `server`
+# -- separate concern from OPENCODE_SERVER_URL above. Needs
+# host.docker.internal wired in (see docker-compose.yml's eval service
+# / tf-select-and-run-eval.sh's --add-host) since this container
+# otherwise only reaches `server`.
+OLLAMA_PS_POLL_INTERVAL_S = float(os.environ.get("OPENCODE_OLLAMA_PS_POLL_INTERVAL_S", "15"))
+OLLAMA_UNLOAD_TIMEOUT_S = float(os.environ.get("OPENCODE_OLLAMA_UNLOAD_TIMEOUT_S", "300"))
+
+
+def ollama_ps(ollama_base_url: str) -> list[dict]:
+    """GET /api/ps -- currently loaded Ollama models. Same endpoint
+    scripts/ollama-model-switch.sh already uses from the host side
+    (verified there against Ollama's own documented API,
+    docs.ollama.com/api/ps) -- this is the container-side equivalent,
+    reached via host.docker.internal instead of localhost. Best-effort:
+    returns [] on any failure rather than raising, since every caller
+    here treats this as informational/best-effort, never load-bearing.
+    """
+    try:
+        req = urllib.request.Request(f"{ollama_base_url}/api/ps", method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return data.get("models", [])
+    except Exception:
+        return []
+
+
+def _ollama_model_entry(model_id: str, models: list[dict]) -> dict | None:
+    for m in models:
+        if m.get("name") == model_id or m.get("model") == model_id:
+            return m
+    return None
+
+
+def _poll_ollama_ps_during(ollama_base_url: str, model_id: str, done_event: threading.Event,
+                            poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
+    """Runs in a background thread alongside a blocking call, printing
+    periodic /api/ps status purely for visibility -- NOT a gate.
+    Confirmed against Ollama's real, documented API schema that
+    /api/ps has no busy/processing field, only load/unload residency
+    (name/size/processor/until) -- so this can tell you "is the model
+    resident", not "is it still draining a previous request". Exists
+    so a long wait is distinguishable from a hang, same philosophy as
+    scripts/ollama-model-switch.sh's own /api/ps polling on the host
+    side.
+    """
+    start = time.time()
+    while not done_event.wait(timeout=poll_interval_s):
+        elapsed = time.time() - start
+        entry = _ollama_model_entry(model_id, ollama_ps(ollama_base_url))
+        if entry is not None:
+            status = f"loaded (processor={entry.get('processor', '?')}, until={entry.get('until', '?')})"
+        else:
+            status = "not loaded"
+        print(f"[eval-client] ollama /api/ps (elapsed {elapsed:.0f}s): {status}", file=sys.stderr)
 
 
 def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
@@ -655,6 +711,11 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     session genuinely busy the whole time -- consistent with cold-load
     time alone consuming the budget, not a connectivity problem.
 
+    A background thread prints periodic /api/ps status for visibility
+    while this blocks (see _poll_ollama_ps_during's docstring for why
+    that's informational only, not a gate) -- bounded by the same
+    WARMUP_TIMEOUT_S hard timeout the blocking call itself has.
+
     Best-effort and silent on failure -- if warm-up itself times out or
     errors, that's not fatal here; the real test ladder will surface
     the same underlying problem with proper category/tier context
@@ -665,21 +726,81 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     if provider != "local/ollama":
         return
     print(f"[eval-client] warming up {provider}/{model_id} before the test ladder "
-          f"(up to {WARMUP_TIMEOUT_S:.0f}s -- Ollama cold-start on a large model can "
-          f"take a while)...", file=sys.stderr)
+          f"(hard timeout {WARMUP_TIMEOUT_S:.0f}s -- Ollama cold-start on a large "
+          f"model can take a while)...", file=sys.stderr)
+
+    done_event = threading.Event()
+    poller = threading.Thread(
+        target=_poll_ollama_ps_during,
+        args=(OLLAMA_BASE_URL, model_id, done_event),
+        daemon=True,
+    )
+    poller.start()
+
+    session_id = None
     try:
         session_id = create_session(base_url)
         send_message(base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
         print("[eval-client] warm-up complete", file=sys.stderr)
     except RuntimeError as e:
-        print(f"[eval-client] warm-up failed/timed out ({e}) -- proceeding to the real "
-              f"test ladder anyway, which will surface the same problem with proper "
-              f"context if it's genuine", file=sys.stderr)
+        print(f"[eval-client] warm-up failed/timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
+              f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
+              f"surface the same problem with proper category/tier context if it's genuine",
+              file=sys.stderr)
     finally:
-        try:
-            abort_session(base_url, session_id)
-        except (RuntimeError, NameError):
-            pass  # best-effort -- session_id may not exist if create_session itself failed
+        done_event.set()
+        poller.join(timeout=5)
+        if session_id is not None:
+            try:
+                abort_session(base_url, session_id)
+            except RuntimeError:
+                pass  # best-effort -- warm-up is already done/failed regardless
+
+
+def unload_local_model(ollama_base_url: str, model_id: str,
+                        timeout_s: float = OLLAMA_UNLOAD_TIMEOUT_S,
+                        poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
+    """Explicitly unloads the model from Ollama once the run finishes,
+    via the same native API scripts/ollama-model-switch.sh already
+    uses (POST /api/generate {"model":..., "keep_alive":0}) instead of
+    just letting Ollama's own 5min idle keep-alive expire naturally --
+    frees GPU/CPU memory right away for whatever runs next.
+
+    Unlike the warm-up poller above, /api/ps polling here DOES
+    meaningfully gate: presence/absence in /api/ps is exactly
+    load/unload residency (the thing this function is actually
+    changing), not the busy-state /api/ps can't see. Bounded by a hard
+    timeout (OPENCODE_OLLAMA_UNLOAD_TIMEOUT_S, 300s default) -- gives
+    up the wait past that point rather than blocking the whole run's
+    completion on it, since Ollama's own keep-alive will expire it
+    eventually regardless.
+
+    Best-effort throughout: this runs after the real test ladder is
+    already done, so nothing downstream depends on it succeeding --
+    any failure is logged, never raised.
+    """
+    print(f"[eval-client] unloading {model_id} from Ollama (hard timeout {timeout_s:.0f}s)...",
+          file=sys.stderr)
+    try:
+        body = json.dumps({"model": model_id, "keep_alive": 0}).encode("utf-8")
+        req = urllib.request.Request(f"{ollama_base_url}/api/generate", data=body,
+                                      headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception as e:
+        print(f"[eval-client] unload request failed ({e}) -- Ollama's own keep-alive "
+              f"will still expire it eventually", file=sys.stderr)
+        return
+
+    start = time.time()
+    while time.time() - start < timeout_s:
+        if _ollama_model_entry(model_id, ollama_ps(ollama_base_url)) is None:
+            print(f"[eval-client] unload confirmed after {time.time() - start:.0f}s", file=sys.stderr)
+            return
+        print(f"[eval-client] still unloading (elapsed {time.time() - start:.0f}s)...", file=sys.stderr)
+        time.sleep(poll_interval_s)
+    print(f"[eval-client] unload not confirmed within the {timeout_s:.0f}s hard timeout -- "
+          f"giving up the wait (Ollama's own keep-alive will still expire it eventually)",
+          file=sys.stderr)
 
 
 def main() -> int:
@@ -812,6 +933,10 @@ def main() -> int:
         print(f"  {name} : {cat_report.get('progress_dots', '')}", file=sys.stderr)
 
     print(f"\nFull report: {results_dir / 'report.json'}", file=sys.stderr)
+
+    if provider == "local/ollama":
+        unload_local_model(OLLAMA_BASE_URL, model_id)
+
     return 0
 
 

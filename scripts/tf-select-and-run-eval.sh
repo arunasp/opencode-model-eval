@@ -207,7 +207,9 @@ fi
 run docker run --rm \
   --entrypoint /usr/local/bin/entrypoint.sh \
   --network "${NETWORK}" \
+  --add-host host.docker.internal:host-gateway \
   -e "OPENCODE_SERVER_URL=http://server:4096" \
+  -e "OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}" \
   -e "OPENCODE_MODEL_PROVIDER=${provider}" \
   -e "OPENCODE_MODEL_ID=${model_id}" \
   -v "${HARNESS_ROOT}/task-suite:/task-suite:ro" \
