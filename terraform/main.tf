@@ -232,7 +232,17 @@ resource "docker_container" "discover" {
   volumes {
     volume_name    = docker_volume.opencode_log.name
     container_path = "/home/harness/.local/share/opencode/log"
-    read_only      = true
+    # Hit live on Cyberdyne: this was read_only = true, on the wrong
+    # assumption (see docker_container.server's comment above) that
+    # server is the only writer. `opencode models --verbose` here is a
+    # raw CLI invocation, not a request to the server -- the opencode
+    # CLI writes its own log file on ANY invocation, serve or not, and
+    # a read-only mount made that write fail: "Unknown: FileSystem.open
+    # (/home/harness/.local/share/opencode/log/opencode.log)". Read-write
+    # here too. (eval-client mode, used by local_ollama and cloud eval
+    # runs, is NOT affected by this -- confirmed in entrypoint.sh it
+    # execs run_eval_client.py, pure Python/urllib against the remote
+    # server over HTTP, never invoking the local opencode binary.)
   }
 }
 
