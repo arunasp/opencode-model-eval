@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a new capability or a change to an existing one.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's the gap?
+      description: What can't you do today that you'd want to be able to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: >-
+        If you have a specific approach in mind, describe it. Not required —
+        "here's the problem, no idea how to solve it" is a fine request too.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the harness does this touch?
+      multiple: true
+      options:
+        - harness-control.sh / CLI menus
+        - Terraform
+        - Docker Compose
+        - Eval client / scoring (CVV)
+        - Model discovery / picker
+        - Documentation
+        - Other / not sure
+    validations:
+      required: false

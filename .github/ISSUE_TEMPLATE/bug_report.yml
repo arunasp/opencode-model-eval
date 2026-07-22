@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the harness isn't working the way it should.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what happened instead of what you expected?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment-path
+    attributes:
+      label: Deployment path
+      description: Which one were you using?
+      options:
+        - Terraform
+        - Docker Compose
+        - Both / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Provider/model (if relevant)
+      description: e.g. opencode/hy3-free, or a local Ollama model
+      placeholder: provider/model-id
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant log
+      description: >-
+        Paste the relevant part of a saved log from results/logs/, or
+        terminal output. Large logs: attach the file instead.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, whether this is WSL2, Docker/Docker Compose/Terraform versions, tmux version (`tmux -V`)
+      placeholder: |
+        OS:
+        WSL2: yes/no
+        tmux -V:
+        docker --version / docker-compose --version:
+        terraform --version (if relevant):
+    validations:
+      required: true
