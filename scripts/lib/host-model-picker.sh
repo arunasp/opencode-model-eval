@@ -134,12 +134,50 @@ host_model_picker() {
     return 1
   fi
 
-  local -a full_ids=()
+  # Stage 1: pick a provider. A flat list of every candidate doesn't
+  # scale -- confirmed live, 125 free candidates across dozens of
+  # providers in one real discovery run is unusable as a single menu.
+  # Labels carry a per-provider count so the list itself gives a sense
+  # of scale before committing to one.
+  local -a provider_labels=()
+  local -a provider_names=()
   while IFS= read -r line; do
-    full_ids+=("$line")
-  done < <(printf '%s' "$candidates_json" | jq -r '.[].full_id')
+    local name="${line%%|*}"
+    local n="${line#*|}"
+    provider_names+=("$name")
+    provider_labels+=("${name} (${n} model$([ "$n" != 1 ] && echo s))")
+  done < <(printf '%s' "$candidates_json" | jq -r '
+    group_by(.provider) | map({provider: .[0].provider, count: length})
+    | sort_by(.provider)[] | "\(.provider)|\(.count)"
+  ')
 
-  host_arrow_menu \
-    "Discovered ${count} free candidate(s) -- Up/Down (or j/k) to move, Enter to select, q to cancel:" \
-    "${full_ids[@]}"
+  local picked_provider_label
+  picked_provider_label="$(host_arrow_menu \
+    "Discovered ${count} free candidate(s) across ${#provider_names[@]} provider(s) -- pick a provider:" \
+    "${provider_labels[@]}")" || return 1
+
+  local picked_provider=""
+  local i
+  for i in "${!provider_labels[@]}"; do
+    if [ "${provider_labels[$i]}" = "${picked_provider_label}" ]; then
+      picked_provider="${provider_names[$i]}"
+      break
+    fi
+  done
+
+  # Stage 2: pick a model within that provider. Just the model id here
+  # (not the full provider/id) since the provider is already fixed --
+  # shorter, and avoids repeating it N times down the list.
+  local -a model_ids=()
+  while IFS= read -r line; do
+    model_ids+=("$line")
+  done < <(printf '%s' "$candidates_json" | jq -r --arg p "$picked_provider" \
+    '[.[] | select(.provider == $p)] | sort_by(.model)[].model')
+
+  local picked_model
+  picked_model="$(host_arrow_menu \
+    "${picked_provider} -- pick a model:" \
+    "${model_ids[@]}")" || return 1
+
+  echo "${picked_provider}/${picked_model}"
 }
