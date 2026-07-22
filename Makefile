@@ -96,7 +96,7 @@ jupyter-logs:
 	docker-compose logs -f jupyter
 
 tf-jupyter-up: tf-init
-	cd terraform && terraform apply -target=docker_container.jupyter
+	cd terraform && terraform apply -target=docker_container.jupyter -target=null_resource.jupyter_connect_info
 
 tf-jupyter-down: tf-init
 	cd terraform && terraform destroy -target=docker_container.jupyter

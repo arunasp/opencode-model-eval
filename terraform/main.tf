@@ -343,6 +343,42 @@ resource "docker_container" "jupyter" {
   }
 }
 
+# Prints jupyter's connect URL+token straight to the terraform apply's
+# own console during apply -- deliberately a null_resource/local-exec,
+# NOT a data "external": that pattern (see data.external.auth_keys's
+# own comment above) writes every result into terraform.tfstate in
+# PLAINTEXT, confirmed against hashicorp/external's own docs. A live
+# Jupyter token is a real credential; local-exec's output streams to
+# the console and is never captured into any tracked Terraform
+# attribute, so nothing ends up in state. triggers.always_run forces
+# this to actually re-run on every apply that touches jupyter (a
+# fixed/static trigger would only run once, on first creation).
+resource "null_resource" "jupyter_connect_info" {
+  depends_on = [docker_container.jupyter]
+
+  triggers = {
+    always_run = timestamp()
+  }
+
+  provisioner "local-exec" {
+    # Retries briefly -- docker_container.jupyter reporting "creation
+    # complete" only means the container process started, not that
+    # Jupyter's own server has finished booting and printed its token
+    # banner yet (observed live: this can lag by a second or two).
+    command = <<-EOT
+      for i in 1 2 3 4 5; do
+        url="$(docker logs ${docker_container.jupyter.name} 2>&1 | grep -oE 'http://[^ ]*token=[a-f0-9]+' | tail -n1 || true)"
+        if [ -n "$url" ]; then
+          echo "jupyter connect URL: $url"
+          exit 0
+        fi
+        sleep 2
+      done
+      echo "jupyter connect URL not found in logs yet (container may still be starting) -- retry: docker logs ${docker_container.jupyter.name}"
+    EOT
+  }
+}
+
 # --- Local models (Ollama-backed) ---------------------------------------
 # Still needs network_mode = "host" to reach a host-run Ollama instance,
 # which the shared eval_net doesn't provide -- kept as its own resource
