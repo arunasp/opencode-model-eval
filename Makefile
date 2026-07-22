@@ -29,9 +29,21 @@
 #                                     confirmation behavior as tf-apply
 #   make tf-output                -- terraform output (both next_step
 #                                     and results_dirs)
+#   make git-workspace             -- one-shot isolated git/bash/edit
+#                                      workspace (docker-compose run --rm)
+#   make tf-git-workspace           -- same, Terraform side
+#   make jupyter-up                 -- start the persistent Jupyter
+#                                       authoring server
+#   make jupyter-down               -- stop it
+#   make jupyter-logs                -- tail it (auth token appears here
+#                                        on first start)
+#   make tf-jupyter-up               -- same, Terraform side
+#   make tf-jupyter-down             -- same, Terraform side
 
 .PHONY: help eval build server-up server-down server-logs auth \
-        tf-init tf-plan tf-apply tf-destroy tf-output tf-eval
+        tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
+        git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
+        tf-jupyter-up tf-jupyter-down
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -51,6 +63,13 @@ help:
 	@echo "make tf-destroy AUTO_APPROVE=1      terraform destroy -auto-approve"
 	@echo "make tf-output                     terraform output"
 	@echo "make tf-eval                       cloud eval run (MODEL=provider/id, omit for live discovery, DRY_RUN=1 to preview)"
+	@echo "make git-workspace                 one-shot isolated git/bash/edit workspace"
+	@echo "make tf-git-workspace              same, Terraform side"
+	@echo "make jupyter-up                    start the persistent Jupyter authoring server"
+	@echo "make jupyter-down                  stop it"
+	@echo "make jupyter-logs                  tail it (auth token appears here on first start)"
+	@echo "make tf-jupyter-up                 same, Terraform side"
+	@echo "make tf-jupyter-down               same, Terraform side"
 
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
