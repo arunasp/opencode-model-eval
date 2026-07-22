@@ -351,6 +351,7 @@ resource "docker_container" "local_ollama" {
   # "apiKey": "ollama" is a placeholder string). server/discover/eval
   # still depend on the check -- see their resource blocks.
 
+  entrypoint = ["/usr/local/bin/entrypoint.sh"]
   command = ["eval-client"]
 
   must_run     = false
