@@ -121,10 +121,20 @@ pick_backend() {
 # for exactly this -- not a polling loop) until the injected command
 # signals completion. The command string is responsible for signaling
 # `tmux wait-for -S "$WAIT_CHANNEL"` itself once done.
+#
+# Switches pane FOCUS to the output pane before sending the command,
+# and back to the menu pane once it completes -- fixes real friction
+# reported live: without this, interacting with something that needs
+# keyboard input in the output pane (scrolling/quitting `less`, or
+# terraform apply's own "Enter a value:" confirmation prompt when
+# AUTO_APPROVE isn't set) required manually clicking over to that pane
+# first, every single time.
 run_in_output_pane() {
   local inner="$1"
+  tmux select-pane -t "${OUTPUT_PANE}"
   tmux send-keys -t "${OUTPUT_PANE}" "bash -c $(printf '%q' "${inner}")" C-m
   tmux wait-for "${WAIT_CHANNEL}"
+  tmux select-pane -t "${SESSION}:0.0"
 }
 
 # run_logged <label> <command...>
