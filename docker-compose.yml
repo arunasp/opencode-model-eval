@@ -112,7 +112,17 @@ services:
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - ./results:/results
-      - opencode-log:/home/harness/.local/share/opencode/log:ro
+      # Read-write, not read-only: `opencode models --verbose` here is
+      # a raw CLI invocation (not a request to the persistent server),
+      # and the opencode CLI writes its own log file on ANY invocation,
+      # serve or not. Confirmed live: this hit the exact same
+      # "Unknown: FileSystem.open" error already fixed on
+      # docker_container.discover in terraform/main.tf and on
+      # scripts/tf-select-and-run-eval.sh's own discover invocation --
+      # this service is a third, independent copy of the same wrong
+      # assumption (that only `server` ever writes to this volume),
+      # not fixed by either of those other two fixes.
+      - opencode-log:/home/harness/.local/share/opencode/log
     # For a specific model instead of auto-discovery:
     # docker compose run --rm discover python3 /usr/local/bin/discover_and_select_model.py --model zhipu/glm-5.2
 

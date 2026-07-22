@@ -82,7 +82,20 @@ discover_base_cmd=(docker run --rm
   --entrypoint python3
   -v "${HARNESS_ROOT}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro"
   -v "${discover_out_dir}:/results"
-  -v "${LOG_VOLUME}:/home/harness/.local/share/opencode/log:ro"
+  # Read-write, not read-only: `opencode models --verbose` here is a
+  # raw CLI invocation (not a request to the persistent server), and
+  # the opencode CLI writes its own log file on ANY invocation, serve
+  # or not. This is the exact same bug already fixed on
+  # docker_container.discover in terraform/main.tf -- but that
+  # Terraform resource is never actually used by this script (it only
+  # borrows the image/network/volume NAMES Terraform created, via
+  # plain `docker run`, not `docker start` on that resource), so
+  # fixing the .tf file alone left this independent hardcoded mount
+  # unfixed. Confirmed live: `terraform apply` correctly showed no
+  # drift after the .tf fix (nothing about that resource is actually
+  # exercised here), and the exact same "Unknown: FileSystem.open"
+  # error reproduced from this line regardless.
+  -v "${LOG_VOLUME}:/home/harness/.local/share/opencode/log"
   "${IMAGE}"
   /usr/local/bin/discover_and_select_model.py
 )
