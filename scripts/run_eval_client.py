@@ -382,6 +382,20 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
                     }, events
 
     if "value" in exception_holder:
+        # Best-effort abort so this session isn't left orphaned,
+        # retrying forever server-side. Confirmed live: this was the
+        # missing case -- any exception OTHER than the explicit
+        # quota-bailout above (e.g. our own http_post timeout) reached
+        # here and just re-raised, leaving the session opencode
+        # created still alive with nothing telling it to stop. Since
+        # opencode's own internal retry is confirmed unbounded, it
+        # kept retrying indefinitely -- this is what accumulates into
+        # the "errors even while idle" symptom across every run that
+        # ever hit this path.
+        try:
+            abort_session(base_url, session_id)
+        except RuntimeError:
+            pass  # best-effort -- we're already raising the original error below
         raise exception_holder["value"]
     return result_holder.get("value"), None, events
 
