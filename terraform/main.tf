@@ -171,11 +171,6 @@ resource "docker_container" "server" {
     external = var.serve_port
   }
 
-  ports {
-    internal = 11434
-    external = var.ollama_base_port
-  }
-
   volumes {
     host_path      = abspath("${var.harness_root}/auth-data/auth.json")
     container_path = "/home/harness/.local/share/opencode/auth.json"

@@ -40,12 +40,6 @@ variable "ollama_base_url" {
   default     = "http://host.docker.internal:11434/v1"
 }
 
-variable "ollama_base_port" {
-  description = "PORT the SERVER container (bridge networking) uses to reach a host-run Ollama instance. host.docker.internal:host-gateway only reaches services bound to 0.0.0.0; if Ollama is bound to 127.0.0.1 only (its default), this will not work until Ollama is started with OLLAMA_HOST=0.0.0.0:11434."
-  type        = number
-  default     = 11434
-}
-
 variable "ollama_tags_url" {
   description = "Ollama's native /api/tags endpoint (NOT the OpenAI-compat /v1 path) -- used by discover_local_ollama_models.py at server startup to auto-detect installed models, same host/port as var.ollama_base_url."
   type        = string
