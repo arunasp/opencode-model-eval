@@ -159,6 +159,56 @@ services:
       - ./results:/results
       - opencode-log:/home/harness/.local/share/opencode/log:ro
 
+  # One-shot container for tasks that genuinely need git (e.g. cloning
+  # a repo to inspect or work on it, instead of the web-fetch-flood
+  # workaround this was replacing) plus normal dev-workflow commands
+  # against whatever gets cloned (npm/pip/build/test -- not narrowed to
+  # git specifically). Deliberately isolated from every other service:
+  # no /task-suite, no /results, no opencode-log volume -- nothing
+  # mounted here persists past this container's lifetime or is shared
+  # with any other role, so bash/edit being allowed broadly still has
+  # nothing to reach beyond its own throwaway filesystem. Run with
+  # `docker-compose run --rm git-workspace`, not `up` -- it is not
+  # meant to be long-lived like `server`.
+  git-workspace:
+    <<: *harness-defaults
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: harness
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+    entrypoint: ["/usr/local/bin/entrypoint.sh", "serve"]
+    environment:
+      OPENCODE_CONFIG: /opt/harness/opencode.git-workspace.json
+      OPENCODE_SERVE_PORT: "4096"
+    volumes:
+      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+
+  # Persistent Jupyter server for hand-authoring/debugging custom-test
+  # notebooks (item 9 of the pinned backlog) -- NOT the headless
+  # papermill execution path (still not built, see Dockerfile's jupyter
+  # stage comment). Like `server`, this is meant to be started/stopped
+  # explicitly (see harness-control.sh's "Start/Stop Jupyter" menu
+  # entries and `make jupyter-up`/`jupyter-down`), not run per-task.
+  # Notebook storage is a dedicated named volume, separate from
+  # anything eval/discover/server touch -- authoring work here has no
+  # reason to share state with an actual eval run.
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: jupyter
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    volumes:
+      - jupyter-notebooks:/notebooks
+    restart: unless-stopped
+
   # Local Ollama-backed models. All five share x-local-ollama-defaults
   # and x-local-ollama-env; only OPENCODE_MODEL_ID differs per service.
   # Model IDs match `ollama list` on Cyberdyne as of 2026-07-20 --
@@ -208,3 +258,8 @@ services:
 # container network, never on the host filesystem directly.
 volumes:
   opencode-log:
+  # Persistent notebook storage for the jupyter service -- survives
+  # `docker-compose down`/container recreation, same reasoning as
+  # opencode-log: only needs to exist inside the Docker-managed volume
+  # layer, never as a direct host bind-mount.
+  jupyter-notebooks:

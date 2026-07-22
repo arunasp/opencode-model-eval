@@ -120,6 +120,16 @@ USER root
 # this exact "tool internally calls pip without the flag" scenario.
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
+# git-workspace's dedicated permission profile (bash/edit allowed --
+# safe here because this container is isolated, not because commands
+# are narrowed to git specifically) -- only needed in this stage since
+# it's the only one with git installed. Default OPENCODE_CONFIG stays
+# the base config inherited from `server`; the git-workspace container
+# overrides it per-container, same pattern as OPENCODE_MODEL_ID for
+# local-ollama.
+COPY config/opencode.git-workspace.json /opt/harness/opencode.git-workspace.json
+RUN chmod 0644 /opt/harness/opencode.git-workspace.json
+
 # py3-pip and git added here, not in the server stage: only this
 # stage's scripts need them (pip for the CVV scoring layer's
 # dependencies, git for fetch_embedding_model.sh's clone below).
@@ -189,3 +199,33 @@ ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 # CMD is inherited from `server` (["serve"]) -- eval-client/discover
 # roles override it per-service via docker-compose's `command:` /
 # terraform's `command` argument, same as before this split.
+
+# --- Stage: jupyter --------------------------------------------------------
+# Item 9 of the pinned backlog: a persistent Jupyter server purely for
+# hand-authoring/debugging custom-test notebooks (mode 3 of the settled
+# custom-test design -- see memory/README's "Custom-test design"
+# section). This is NOT the headless papermill execution path that
+# actually runs a notebook scenario during a normal eval -- that's a
+# separate, still-not-built piece of the same design (papermill isn't
+# even installed here). Extends `harness` (reuses its python3/pip/git
+# layers) rather than `server` or `base`, since notebooks need the same
+# CVV tooling already installed there to be useful for authoring
+# CVV-kind scenarios.
+FROM harness AS jupyter
+
+USER root
+
+RUN pip install --break-system-packages --no-cache-dir jupyterlab
+
+RUN mkdir -p /notebooks && chmod -R 0777 /notebooks
+WORKDIR /notebooks
+
+EXPOSE 8888
+# --no-browser: there's no browser inside this container to open.
+# --ip=0.0.0.0: opencode's own default-loopback caveat elsewhere in
+# this file applies here too -- Jupyter's own default is also
+# loopback-only, unreachable from outside the container otherwise.
+# NotebookApp.token left to Jupyter's own auto-generated default rather
+# than disabled outright -- see docker-compose.yml/terraform's comments
+# on how the token is surfaced to whoever's starting this.
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]

@@ -22,6 +22,12 @@ variable "serve_port" {
   default     = 49604
 }
 
+variable "jupyter_port" {
+  description = "Host port mapped to the jupyter container's Jupyter Lab port (8888 internal, Jupyter's own conventional default -- no collision concern verified against anything else on Cyberdyne, unlike serve_port's 4096-vs-Axiom history)."
+  type        = number
+  default     = 8888
+}
+
 variable "local_server_url" {
   description = "URL local-model eval containers (host networking, no shared-network DNS) use to reach the server container. Defaults to localhost since network_mode=host puts them on the same network namespace as the Docker host. Port must match var.serve_port -- kept as a separate variable rather than interpolated from it because Terraform doesn't allow referencing one variable's value in another variable's default."
   type        = string

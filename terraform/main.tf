@@ -125,10 +125,11 @@ resource "docker_image" "harness" {
   }
 
   triggers = {
-    dockerfile_sha1        = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1        = filesha1("${var.harness_root}/entrypoint.sh")
-    run_eval_client_sha1   = filesha1("${var.harness_root}/scripts/run_eval_client.py")
-    config_sha1            = filesha1("${var.harness_root}/config/opencode.base.json")
+    dockerfile_sha1           = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1           = filesha1("${var.harness_root}/entrypoint.sh")
+    run_eval_client_sha1      = filesha1("${var.harness_root}/scripts/run_eval_client.py")
+    config_sha1               = filesha1("${var.harness_root}/config/opencode.base.json")
+    git_workspace_config_sha1 = filesha1("${var.harness_root}/config/opencode.git-workspace.json")
   }
 }
 
@@ -243,6 +244,87 @@ resource "docker_container" "discover" {
     # runs, is NOT affected by this -- confirmed in entrypoint.sh it
     # execs run_eval_client.py, pure Python/urllib against the remote
     # server over HTTP, never invoking the local opencode binary.)
+  }
+}
+
+# --- Git-scoped one-shot workspace ---------------------------------------
+# Only role in this project with git (and general bash/edit) allowed
+# (config/opencode.git-workspace.json overrides OPENCODE_CONFIG's default
+# bash:"deny"/edit:"deny" with bash:"allow"/edit:"allow" -- not narrowed to
+# git specifically, since normal dev-workflow commands against whatever
+# gets cloned are a legitimate use of this workspace too). Deliberately
+# isolated to make that safe: no /results, /task-suite, or opencode-log
+# mount, so there is no host path or other service's data reachable from
+# inside this container regardless of what a bash command does with
+# cd/-C/--git-dir. must_run=false/rm=false mirrors docker_container.discover's
+# on-demand pattern, not docker_container.server's persistent one -- this
+# is meant to be created fresh per task, not kept running.
+resource "docker_container" "git_workspace" {
+  name  = "opencode-model-eval-git-workspace"
+  image = docker_image.harness.image_id
+  depends_on = [terraform_data.auth_file_check]
+
+  entrypoint = ["/usr/local/bin/entrypoint.sh", "serve"]
+
+  env = [
+    "OPENCODE_CONFIG=/opt/harness/opencode.git-workspace.json",
+  ]
+
+  must_run = false
+  attach   = false
+  rm       = false
+
+  volumes {
+    host_path      = abspath("${var.harness_root}/auth-data/auth.json")
+    container_path = "/home/harness/.local/share/opencode/auth.json"
+    read_only      = true
+  }
+}
+
+resource "docker_image" "jupyter" {
+  name = "opencode-model-eval-jupyter:latest"
+
+  build {
+    context    = var.harness_root
+    dockerfile = "Dockerfile"
+    target     = "jupyter"
+    build_args = {
+      OPENCODE_IMAGE = var.opencode_image
+      OPENCODE_REF   = var.opencode_ref
+    }
+  }
+
+  triggers = {
+    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
+  }
+}
+
+# Separate named volume from opencode_log -- notebook authoring work
+# has no reason to share state with an actual eval run.
+resource "docker_volume" "jupyter_notebooks" {
+  name = "opencode-model-eval-jupyter-notebooks"
+}
+
+# Persistent, start/stop-controlled like docker_container.server --
+# NOT one-shot like discover/git_workspace, since this is meant to stay
+# up across an authoring session. See harness-control.sh's "Start/Stop
+# Jupyter" menu entries and `make tf-jupyter-up`/`tf-jupyter-down`.
+resource "docker_container" "jupyter" {
+  name  = "opencode-model-eval-jupyter"
+  image = docker_image.jupyter.image_id
+
+  must_run = true
+  attach   = false
+  rm       = false
+
+  ports {
+    internal = 8888
+    external = var.jupyter_port
+  }
+
+  volumes {
+    volume_name    = docker_volume.jupyter_notebooks.name
+    container_path = "/notebooks"
   }
 }
 

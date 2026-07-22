@@ -67,8 +67,29 @@ server-down:
 server-logs:
 	docker-compose logs -f server
 
+jupyter-up:
+	docker-compose up -d jupyter
+
+jupyter-down:
+	docker-compose stop jupyter
+
+jupyter-logs:
+	docker-compose logs -f jupyter
+
+tf-jupyter-up: tf-init
+	cd terraform && terraform apply -target=docker_container.jupyter
+
+tf-jupyter-down: tf-init
+	cd terraform && terraform destroy -target=docker_container.jupyter
+
 auth:
 	@bash scripts/ensure-auth-data.sh $(KEYS)
+
+git-workspace:
+	docker-compose run --rm git-workspace
+
+tf-git-workspace: tf-init
+	cd terraform && terraform apply -target=docker_container.git_workspace
 
 tf-init:
 	cd terraform && terraform init
