@@ -14,6 +14,16 @@
 #                        scripts/lib/host-model-picker.sh -- this
 #                        script doesn't duplicate that, just gets you
 #                        there with one less thing to remember.
+# Plus a fourth, non-action entry:
+#   - View logs       -> browse and open a past action's saved log.
+#
+# Every action's output streams completely normally (full terminal,
+# unmodified scrolling -- no split-region/scroll-region emulation,
+# which behaves inconsistently across terminal emulators) while
+# simultaneously being captured to results/logs/. When the action
+# finishes, the menu takes the screen back. "View logs" is how you
+# revisit that output afterward -- opens the picked file in `less`,
+# real native scrolling, not a custom pager.
 #
 # Deliberately does NOT offer a "custom test" option (e.g. for the
 # Soft Thinking / Cold-Stop-over-API research work) -- there is no
@@ -37,16 +47,39 @@ if [ ! -t 0 ]; then
   exit 1
 fi
 
+readonly LOG_DIR="results/logs"
+
 pick_backend() {
   host_arrow_menu "Which backend?" "Terraform" "Docker Compose"
+}
+
+# run_logged <label> <command...>
+# Runs a command with its combined stdout+stderr streamed completely
+# normally to the terminal (real scrolling, nothing emulated) while
+# simultaneously saving a copy to results/logs/<timestamp>-<label>.log.
+# Uses PIPESTATUS[0] rather than plain $? -- under `set -o pipefail`
+# the pipeline's own exit status would already reflect the command's
+# failure correctly in most cases, but PIPESTATUS is unambiguous
+# regardless of pipefail state and is the standard, correct way to
+# recover a specific stage's exit code from a pipeline.
+run_logged() {
+  local label="$1"; shift
+  mkdir -p "${LOG_DIR}"
+  local log_file
+  log_file="${LOG_DIR}/$(date +%Y%m%d-%H%M%S)-${label}.log"
+  echo "--- ${label} (logging to ${log_file}) ---"
+  "$@" 2>&1 | tee "${log_file}"
+  local rc=${PIPESTATUS[0]}
+  echo "--- ${label} finished (exit ${rc}) -- log saved to ${log_file} ---"
+  return "${rc}"
 }
 
 deploy() {
   local backend
   backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
   case "$backend" in
-    Terraform) make tf-apply ;;
-    "Docker Compose") docker-compose up -d server ;;
+    Terraform) run_logged "deploy-terraform" make tf-apply ;;
+    "Docker Compose") run_logged "deploy-compose" docker-compose up -d server ;;
   esac
 }
 
@@ -54,8 +87,8 @@ remove() {
   local backend
   backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
   case "$backend" in
-    Terraform) make tf-destroy ;;
-    "Docker Compose") docker-compose down ;;
+    Terraform) run_logged "remove-terraform" make tf-destroy ;;
+    "Docker Compose") run_logged "remove-compose" docker-compose down ;;
   esac
 }
 
@@ -63,20 +96,40 @@ run_eval() {
   local backend
   backend="$(pick_backend)" || { echo "Cancelled." >&2; return 1; }
   case "$backend" in
-    Terraform) bash scripts/tf-select-and-run-eval.sh ;;
-    "Docker Compose") bash scripts/select-and-run-eval.sh ;;
+    Terraform) run_logged "eval-terraform" bash scripts/tf-select-and-run-eval.sh ;;
+    "Docker Compose") run_logged "eval-compose" bash scripts/select-and-run-eval.sh ;;
   esac
+}
+
+view_logs() {
+  local -a logs=()
+  if [ -d "${LOG_DIR}" ]; then
+    while IFS= read -r f; do
+      logs+=("$f")
+    done < <(find "${LOG_DIR}" -maxdepth 1 -type f -name '*.log' | sort -r)
+  fi
+  if [ "${#logs[@]}" -eq 0 ]; then
+    echo "No logs yet -- run something first." >&2
+    return 1
+  fi
+  local selected
+  selected="$(host_arrow_menu "Pick a log to view (newest first):" "${logs[@]}")" || {
+    echo "Cancelled." >&2
+    return 1
+  }
+  less "${selected}"
 }
 
 while true; do
   action="$(host_arrow_menu \
     "=== opencode-model-eval control ===" \
-    "Deploy harness" "Remove harness" "Run an eval" "Quit")" || exit 0
+    "Deploy harness" "Remove harness" "Run an eval" "View logs" "Quit")" || exit 0
 
   case "$action" in
     "Deploy harness") deploy || echo "Deploy failed -- see output above." >&2 ;;
     "Remove harness") remove || echo "Remove failed -- see output above." >&2 ;;
     "Run an eval") run_eval || echo "Eval run failed or was cancelled -- see output above." >&2 ;;
+    "View logs") view_logs ;;
     Quit) exit 0 ;;
   esac
 done
