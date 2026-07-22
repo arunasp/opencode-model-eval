@@ -86,6 +86,16 @@ if [ -z "${HARNESS_CONTROL_TMUX_PANE:-}" ]; then
   lines="$(tput lines)"
   tmux new-session -d -s "${session}" -x "${cols}" -y "${lines}"
   tmux set-option -t "${session}" -g mouse on
+  # Status-right hint for pane-switching/zoom -- deliberately NOT the
+  # menu's own q/Enter/j-k shortcuts (those are already shown in the
+  # menu pane's own footer, right above the prompt). This is for the
+  # tmux-level shortcuts that aren't shown anywhere else and need to
+  # keep working even when you're inside `less` in the output pane or
+  # the menu footer has scrolled out of view -- the status bar is the
+  # one thing always visible regardless of what's on screen.
+  tmux set-option -t "${session}" -g status-right-length 100
+  tmux set-option -t "${session}" -g status-right \
+    "^B+arrow:pane  ^B+z:zoom  ^B+[:scroll | #H %H:%M %d-%b-%y"
   # Split off the right 70% as the output pane; pane 0 (left, 30%)
   # stays the menu. -l (absolute cell count) rather than -p
   # (percentage): -p reproducibly fails with tmux's own "size missing"
