@@ -107,6 +107,23 @@ FROM server AS harness
 
 USER root
 
+# Redeclared explicitly rather than relying on inheritance from
+# `server` -- found live on Cyberdyne that invocations of THIS stage's
+# image (docker_container.local_ollama via Terraform, a raw `docker
+# run` in scripts/tf-select-and-run-eval.sh, and the same latent gap in
+# docker-compose.yml's eval/local-ollama-defaults) intermittently ran
+# their command ("eval-client") directly instead of through
+# entrypoint.sh, even though the Dockerfile text correctly inherits
+# ENTRYPOINT from `server`. Cyberdyne's Docker uses the legacy builder,
+# not BuildKit (see docker_image.server's own build-arg comment above)
+# -- the legacy builder has a known history of not always correctly
+# propagating inherited image CONFIG metadata (as opposed to layers)
+# through multi-stage builds under certain cache conditions. This line
+# is textually redundant with server's own ENTRYPOINT, but removes any
+# dependency on that inheritance actually working, regardless of the
+# exact mechanism.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 # spacy's own `python3 -m spacy download <model>` command internally
 # shells out to a SEPARATE pip subprocess to install the model wheel --
 # that inner call does NOT inherit the Dockerfile's own explicit

@@ -29,6 +29,7 @@ x-local-ollama-env: &local-ollama-env
 
 x-local-ollama-defaults: &local-ollama-defaults
   <<: *harness-defaults
+  entrypoint: ["/usr/local/bin/entrypoint.sh"]
   command: ["eval-client"]
   # Host networking so this eval-client container reaches the server
   # container's published port via localhost -- "server:4096" does NOT
@@ -134,6 +135,7 @@ services:
   # running (see entrypoint.sh).
   eval:
     <<: *harness-defaults
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
     command: ["eval-client"]
     depends_on:
       server:

@@ -173,6 +173,7 @@ fi
 
 # --- Step 2: run the eval-client container against it -------------------
 run docker run --rm \
+  --entrypoint /usr/local/bin/entrypoint.sh \
   --network "${NETWORK}" \
   -e "OPENCODE_SERVER_URL=http://server:4096" \
   -e "OPENCODE_MODEL_PROVIDER=${provider}" \
