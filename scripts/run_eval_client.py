@@ -651,6 +651,24 @@ def main() -> int:
     setup_message = ladder["setup_turn"]
     model_slug = f"{provider}_{model_id.replace(':', '-').replace('/', '-')}"
     results_dir = RESULTS_DIR / model_slug
+
+    # Rotate a previous run's results before overwriting -- confirmed
+    # live (real uploaded results dump) that a rerun against the same
+    # model silently overwrote the prior report.json/category files in
+    # place, with the only history preserved being a manual "-old"
+    # rename the user did themselves. Only rotates if a previous run
+    # actually completed (report.json present) -- an empty/never-used
+    # directory (e.g. from mkdir with no run) isn't worth preserving.
+    # Timestamp suffix, not a single "-old", so multiple past runs
+    # accumulate rather than only ever keeping one generation back --
+    # mirrors results/logs/'s own YYYYMMDD-HHMMSS naming rather than
+    # inventing a different convention.
+    if (results_dir / "report.json").exists():
+        rotated_dir = results_dir.parent / f"{model_slug}.{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+        print(f"[eval-client] previous results at {results_dir} found -- rotating to {rotated_dir}",
+              file=sys.stderr)
+        shutil.move(str(results_dir), str(rotated_dir))
+
     results_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[eval-client] target server: {base_url}", file=sys.stderr)
