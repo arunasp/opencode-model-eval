@@ -7,16 +7,16 @@
 #
 # Two sources, deliberately handled differently:
 #   - Cloud models: live discovery via the `discover` Compose service
-#     (queries `opencode models --verbose` for real). This used to be a
-#     hardcoded CLOUD_MODELS array mirroring terraform/variables.tf's
-#     var.models -- that variable is gone now (see terraform/main.tf's
-#     docker_container.discover comment: the whole static matrix was
-#     removed in favor of live discovery), so a hardcoded copy here
-#     would just be a second, now-orphaned source of the same staleness
-#     problem. `discover` itself prompts interactively when run with a
-#     real terminal attached (docker-compose run keeps stdin attached
-#     by default, unlike `run --rm -T`), same picker used on the
-#     Terraform side via scripts/tf-select-and-run-eval.sh.
+#     (queries `opencode models --verbose` for real), run with -T
+#     (no pseudo-TTY -- it never needs one) and --list-json (just
+#     fetches the candidate list, doesn't pick). Picking itself runs
+#     entirely on the HOST via scripts/lib/host-model-picker.sh's
+#     arrow-key menu, same one used by
+#     scripts/tf-select-and-run-eval.sh on the Terraform side -- an
+#     earlier version had `discover` itself prompt via attached stdin
+#     inside docker-compose; moved out because picking a model is a
+#     host-terminal concern, not something that belongs inside a
+#     container.
 #   - Local Ollama models: derived LIVE from `docker-compose config
 #     --services`, filtered to exclude the 3 non-model services
 #     (server/discover/eval) -- this never drifts from the actual
@@ -30,6 +30,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# shellcheck source=/dev/null
+source scripts/lib/host-model-picker.sh
 
 if ! command -v docker-compose >/dev/null 2>&1; then
   echo "error: docker-compose not found on PATH" >&2
@@ -68,23 +70,39 @@ run_selected() {
   local kind="${kinds[$idx]}"
 
   if [ "$kind" = "cloud" ]; then
-    echo "docker-compose run --rm discover"
-    if [ "$dry_run" = false ]; then
-      # discover writes results/discovered-model.env; read it back to
-      # drive the actual eval run, same handoff tf-select-and-run-eval.sh
-      # uses on the Terraform side.
-      docker-compose run --rm discover
-      env_file="results/discovered/discovered-model.env"
-      if [ ! -f "$env_file" ]; then
-        echo "error: discovery ran but $env_file wasn't written -- check the output above" >&2
-        exit 1
+    if [ -t 0 ]; then
+      echo "docker-compose run --rm -T discover --list-json"
+      if [ "$dry_run" = false ]; then
+        candidates_json="$(docker-compose run --rm -T discover --list-json)"
+        selected_full_id="$(host_model_picker "$candidates_json")" || {
+          echo "No model selected." >&2
+          exit 1
+        }
+        provider="${selected_full_id%%/*}"
+        model_id="${selected_full_id#*/}"
       fi
-      # shellcheck source=/dev/null
-      source "$env_file"
-      : "${OPENCODE_MODEL_PROVIDER:?discovery did not set OPENCODE_MODEL_PROVIDER}"
-      : "${OPENCODE_MODEL_ID:?discovery did not set OPENCODE_MODEL_ID}"
-      echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$OPENCODE_MODEL_PROVIDER -e OPENCODE_MODEL_ID=$OPENCODE_MODEL_ID eval"
-      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$OPENCODE_MODEL_PROVIDER" -e OPENCODE_MODEL_ID="$OPENCODE_MODEL_ID" eval
+    else
+      echo "docker-compose run --rm -T discover"
+      if [ "$dry_run" = false ]; then
+        # No real terminal (CI, scripted) -- no one to answer a host
+        # prompt, so let the container fall back to its own unattended
+        # auto-select instead, writing results/discovered-model.env.
+        docker-compose run --rm -T discover
+        env_file="results/discovered/discovered-model.env"
+        if [ ! -f "$env_file" ]; then
+          echo "error: discovery ran but $env_file wasn't written -- check the output above" >&2
+          exit 1
+        fi
+        # shellcheck source=/dev/null
+        source "$env_file"
+        provider="${OPENCODE_MODEL_PROVIDER:?discovery did not set OPENCODE_MODEL_PROVIDER}"
+        model_id="${OPENCODE_MODEL_ID:?discovery did not set OPENCODE_MODEL_ID}"
+      fi
+    fi
+    if [ "$dry_run" = false ]; then
+      echo "Selected: ${provider}/${model_id}"
+      echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
     fi
   else
     echo "docker-compose run --rm $name"
@@ -108,7 +126,7 @@ fi
 
 echo "=== opencode-model-eval: pick a model to test ==="
 echo
-echo "Cloud (live discovery -- prompts again for the actual model):"
+echo "Cloud (live discovery -- prompts on this host for the actual model):"
 for i in "${!names[@]}"; do
   if [ "${kinds[$i]}" = "cloud" ]; then
     printf "  %2d) %s\n" "$((i+1))" "${names[$i]}"

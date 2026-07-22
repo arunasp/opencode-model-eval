@@ -415,11 +415,14 @@ list. Cloud is a single `cloud` entry standing in for live discovery
 via `opencode models --verbose` (the `discover` service) — not a fixed
 list anymore; see "Known gaps" below for why the earlier
 per-model-hardcoded design (both here and in Terraform's now-deleted
-`var.models`) was dropped. Discovery itself prompts interactively for
-which model to use when run with a real terminal attached, and falls
-back to an unattended size-heuristic auto-pick otherwise (CI, piped
-input) — see `scripts/discover_and_select_model.py --help` for the
-`--interactive`/`--auto` overrides.
+`var.models`) was dropped. Picking which model to use happens entirely
+on the HOST, not inside Docker: `discover` runs non-interactively
+(`--list-json`, just returns the candidate list) when a real terminal
+is attached, and `scripts/lib/host-model-picker.sh`'s arrow-key (or
+j/k) menu runs on the host terminal to choose one — never a TTY
+inside the container. Without a real terminal (CI, piped input),
+`discover` falls back to its own unattended size-heuristic auto-pick
+instead, same as before.
 
 Terraform-provisioned infra has the equivalent single-step wrapper:
 

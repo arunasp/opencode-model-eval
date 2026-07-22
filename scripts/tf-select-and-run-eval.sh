@@ -11,17 +11,25 @@
 # Compose path's actual pattern: nothing is provisioned ahead of time
 # for "which model to run", it's resolved at invocation time.
 #
-# Two modes, same distinction docker_container.discover already draws:
-#   - No model given: live discovery. Runs the discover container
-#     (python3 discover_and_select_model.py, no --model), which queries
-#     `opencode models --verbose` for real and auto-selects a free
-#     candidate.
+# Three modes:
 #   - provider/id given directly (e.g. opencode/hy3-free): skips
-#     discovery, same as discover_and_select_model.py's own --model
-#     flag.
+#     discovery entirely, same as discover_and_select_model.py's own
+#     --model flag.
+#   - No model given, real terminal (`[ -t 0 ]`): the discover
+#     container runs non-interactively (--list-json, no -it, no TTY
+#     ever touches Docker) to fetch the live candidate list, then
+#     scripts/lib/host-model-picker.sh's arrow-key menu runs entirely
+#     on the HOST to pick one. Picking is a host-terminal concern, not
+#     something that belongs inside a container -- an earlier attempt
+#     put an arrow-key menu inside the container via Python's curses
+#     module (git history: "feat: ncurses arrow-key menu for the
+#     discovery picker") -- never merged, superseded by this design.
+#   - No model given, no real terminal (CI, piped input): the discover
+#     container auto-selects via its own size heuristic, same as
+#     before.
 #
 # Usage:
-#   bash scripts/tf-select-and-run-eval.sh                       # live discovery
+#   bash scripts/tf-select-and-run-eval.sh                       # live discovery (prompts on a real terminal)
 #   bash scripts/tf-select-and-run-eval.sh opencode/hy3-free       # direct, no discovery
 #   bash scripts/tf-select-and-run-eval.sh --dry-run opencode/hy3-free  # print, don't run
 #
@@ -34,6 +42,8 @@
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# shellcheck source=/dev/null
+source scripts/lib/host-model-picker.sh
 
 readonly IMAGE="opencode-model-eval-harness:latest"
 readonly NETWORK="opencode-model-eval-net"
@@ -62,6 +72,21 @@ run() {
   fi
 }
 
+discover_out_dir="${HARNESS_ROOT}/results/discovered"
+mkdir -p "${discover_out_dir}"
+
+# Base discover invocation shared by every non-direct-model path --
+# never -it, never touches a TTY. Extra args (--list-json / bare
+# auto-select) are appended by each caller below.
+discover_base_cmd=(docker run --rm
+  --entrypoint python3
+  -v "${HARNESS_ROOT}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro"
+  -v "${discover_out_dir}:/results"
+  -v "${LOG_VOLUME}:/home/harness/.local/share/opencode/log:ro"
+  "${IMAGE}"
+  /usr/local/bin/discover_and_select_model.py
+)
+
 # --- Step 1: resolve provider/model -------------------------------------
 if [ -n "${direct_model}" ]; then
   if [[ "${direct_model}" != */* ]]; then
@@ -71,36 +96,35 @@ if [ -n "${direct_model}" ]; then
   provider="${direct_model%%/*}"
   model_id="${direct_model#*/}"
   echo "Using directly (no discovery): ${provider}/${model_id}"
-else
-  echo "No model given -- running live discovery via 'opencode models --verbose'..."
-  discover_out_dir="${HARNESS_ROOT}/results/discovered"
-  mkdir -p "${discover_out_dir}"
-
-  discover_cmd=(docker run --rm)
-  # -it only when stdin is a real terminal: discover_and_select_model.py
-  # already falls back to auto-select on a non-tty stdin (CI, a piped
-  # invocation), so this only matters for the interactive-picker case --
-  # `docker run -it` itself errors out if attempted without a real
-  # terminal on this side.
-  if [ -t 0 ]; then
-    discover_cmd+=(-it)
-  fi
-  discover_cmd+=(
-    --entrypoint python3
-    -v "${HARNESS_ROOT}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro"
-    -v "${discover_out_dir}:/results"
-    -v "${LOG_VOLUME}:/home/harness/.local/share/opencode/log:ro"
-    "${IMAGE}"
-    /usr/local/bin/discover_and_select_model.py
-  )
+elif [ -t 0 ]; then
+  echo "No model given, real terminal detected -- fetching live candidates..."
+  list_cmd=("${discover_base_cmd[@]}" --list-json)
 
   if [ "${dry_run}" = true ]; then
-    echo "${discover_cmd[*]}"
+    echo "${list_cmd[*]}"
+    echo "(dry-run: cannot pick a model without actually fetching the candidate list -- stopping here)"
+    exit 0
+  fi
+
+  candidates_json="$("${list_cmd[@]}")"
+  selected_full_id="$(host_model_picker "${candidates_json}")" || {
+    echo "No model selected." >&2
+    exit 1
+  }
+  provider="${selected_full_id%%/*}"
+  model_id="${selected_full_id#*/}"
+  echo "Selected: ${provider}/${model_id}"
+else
+  echo "No model given, no real terminal -- running unattended auto-select..."
+  auto_cmd=("${discover_base_cmd[@]}")
+
+  if [ "${dry_run}" = true ]; then
+    echo "${auto_cmd[*]}"
     echo "(dry-run: cannot resolve a model without actually running discovery -- stopping here)"
     exit 0
   fi
 
-  "${discover_cmd[@]}"
+  "${auto_cmd[@]}"
 
   env_file="${discover_out_dir}/discovered-model.env"
   if [ ! -f "${env_file}" ]; then
@@ -111,7 +135,7 @@ else
   source "${env_file}"
   provider="${OPENCODE_MODEL_PROVIDER:?discovery did not set OPENCODE_MODEL_PROVIDER}"
   model_id="${OPENCODE_MODEL_ID:?discovery did not set OPENCODE_MODEL_ID}"
-  echo "Selected via discovery: ${provider}/${model_id}"
+  echo "Selected via discovery (auto): ${provider}/${model_id}"
 fi
 
 # --- Step 2: run the eval-client container against it -------------------
