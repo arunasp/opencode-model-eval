@@ -249,6 +249,37 @@ pick_cloud_model_compose() {
   host_model_picker "${candidates_json}"
 }
 
+pick_local_model_terraform() {
+  local candidates_json
+  candidates_json="$(bash scripts/tf-select-and-run-eval.sh --list-local-json)" || {
+    echo "Failed to fetch local model list." >&2
+    return 1
+  }
+  host_model_picker "${candidates_json}"
+}
+
+pick_local_model_compose() {
+  # Same config/opencode.base.json source of truth as
+  # tf-select-and-run-eval.sh's --list-local-json -- no
+  # docker-compose-service-derived list anymore now that the 5
+  # dedicated per-model services are gone (see docker-compose.yml's
+  # local-ollama-defaults removal comment).
+  local candidates_json
+  candidates_json="$(python3 -c "
+import json
+cfg = json.load(open('config/opencode.base.json'))
+models = list(cfg['provider']['local/ollama']['models'].keys())
+print(json.dumps([
+    {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}
+    for m in models
+]))
+")" || {
+    echo "Failed to fetch local model list." >&2
+    return 1
+  }
+  host_model_picker "${candidates_json}"
+}
+
 # capture_server_log_since -- writes a slice of the persistent
 # server's own log (covering the window an eval action just ran in)
 # to a sibling file next to that action's own log, e.g.
@@ -272,12 +303,16 @@ capture_server_log_since() {
 }
 
 run_eval_terraform() {
-  # tf-select-and-run-eval.sh only ever does cloud models -- local
-  # Ollama models on the Terraform path are separate
-  # docker_container.local_ollama resources (see terraform/main.tf),
-  # not something this script runs an eval against.
+  local kind
+  kind="$(host_arrow_menu "Cloud or local model?" "cloud" "local")" || return 1
+
   local picked
-  picked="$(pick_cloud_model_terraform)" || return 1
+  if [ "${kind}" = "cloud" ]; then
+    picked="$(pick_cloud_model_terraform)" || return 1
+  else
+    picked="$(pick_local_model_terraform)" || return 1
+  fi
+
   local since
   since="$(date -u +%Y-%m-%dT%H:%M:%S)"
   local rc=0
@@ -287,31 +322,20 @@ run_eval_terraform() {
 }
 
 run_eval_compose() {
-  # Mirrors select-and-run-eval.sh's own top-level menu (cloud vs each
-  # local service), but built and shown HERE instead of letting that
-  # script show it -- same reasoning as pick_cloud_model_terraform.
-  local -a options=("cloud")
-  local svc
-  while IFS= read -r svc; do
-    [ -z "${svc}" ] && continue
-    options+=("${svc}")
-  done < <(docker-compose config --services 2>/dev/null | grep -v -E '^(server|discover|eval)$' || true)
+  local kind
+  kind="$(host_arrow_menu "Cloud or local model?" "cloud" "local")" || return 1
 
-  local picked_target
-  picked_target="$(host_arrow_menu "Which model?" "${options[@]}")" || return 1
+  local picked
+  if [ "${kind}" = "cloud" ]; then
+    picked="$(pick_cloud_model_compose)" || return 1
+  else
+    picked="$(pick_local_model_compose)" || return 1
+  fi
 
   local since
   since="$(date -u +%Y-%m-%dT%H:%M:%S)"
   local rc=0
-  if [ "${picked_target}" = "cloud" ]; then
-    local picked
-    picked="$(pick_cloud_model_compose)" || return 1
-    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}" || rc=$?
-  else
-    # Local service name -- already fully non-interactive (no
-    # discovery, no picker involved), runs directly.
-    run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked_target}" || rc=$?
-  fi
+  run_logged "eval-compose" bash scripts/select-and-run-eval.sh "${picked}" || rc=$?
   capture_server_log_since "Docker Compose" "${since}" "${LAST_ACTION_LOG_FILE}"
   return "${rc}"
 }

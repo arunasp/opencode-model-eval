@@ -17,10 +17,18 @@
 #     inside docker-compose; moved out because picking a model is a
 #     host-terminal concern, not something that belongs inside a
 #     container.
-#   - Local Ollama models: derived LIVE from `docker-compose config
-#     --services`, filtered to exclude the 3 non-model services
-#     (server/discover/eval) -- this never drifts from the actual
-#     configured service list, unlike a hardcoded copy would.
+#   - Local Ollama models: read from config/opencode.base.json's
+#     provider["local/ollama"]["models"] keys (the actual opencode
+#     config, single source of truth) and run through the SAME
+#     generic `eval` service as cloud models, via explicit
+#     OPENCODE_MODEL_PROVIDER/OPENCODE_MODEL_ID env vars -- not 5
+#     dedicated per-model services with their own host networking
+#     (that design used to exist here and on the Terraform side; on
+#     Terraform it caused a real bug -- see terraform/main.tf's
+#     docker_container.local_ollama removal comment -- and even here,
+#     where that specific bug didn't apply, it was 5 near-duplicate
+#     services for no benefit once the generic eval service already
+#     does the same job via env vars).
 #
 # Usage:
 #   bash scripts/select-and-run-eval.sh              # interactive menu
@@ -39,7 +47,11 @@ if ! command -v docker-compose >/dev/null 2>&1; then
   exit 1
 fi
 
-LOCAL_SERVICES="$(docker-compose config --services 2>/dev/null | grep -v -E '^(server|discover|eval)$' || true)"
+LOCAL_MODELS="$(python3 -c "
+import json
+cfg = json.load(open('config/opencode.base.json'))
+print('\n'.join(cfg['provider']['local/ollama']['models'].keys()))
+")"
 
 dry_run=false
 direct_name=""
@@ -59,11 +71,11 @@ done
 names=("cloud")
 kinds=("cloud")
 
-while IFS= read -r svc; do
-  [ -z "$svc" ] && continue
-  names+=("$svc")
+while IFS= read -r model; do
+  [ -z "$model" ] && continue
+  names+=("$model")
   kinds+=("local")
-done <<< "$LOCAL_SERVICES"
+done <<< "$LOCAL_MODELS"
 
 run_selected() {
   local idx="$1"
@@ -106,9 +118,9 @@ run_selected() {
       exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
     fi
   else
-    echo "docker-compose run --rm $name"
+    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=$name eval"
     if [ "$dry_run" = false ]; then
-      exec docker-compose run --rm "$name"
+      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID="$name" eval
     fi
   fi
 }
@@ -121,6 +133,15 @@ if [ -n "$direct_name" ]; then
   # this script prompt from wherever it's invoked) can skip straight
   # to running it here too. Local service names never contain a /, so
   # there's no ambiguity with the names-array lookup below.
+  if [[ "$direct_name" == local/ollama/* ]]; then
+    provider="local/ollama"
+    model_id="${direct_name#local/ollama/}"
+    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+    if [ "$dry_run" = false ]; then
+      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
+    fi
+    exit 0
+  fi
   if [[ "$direct_name" == */* ]]; then
     provider="${direct_name%%/*}"
     model_id="${direct_name#*/}"
@@ -150,7 +171,7 @@ for i in "${!names[@]}"; do
   fi
 done
 echo
-echo "Local (Ollama, live from docker-compose):"
+echo "Local (Ollama, from config/opencode.base.json):"
 for i in "${!names[@]}"; do
   if [ "${kinds[$i]}" = "local" ]; then
     printf "  %2d) %s\n" "$((i+1))" "${names[$i]}"

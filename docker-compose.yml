@@ -12,50 +12,6 @@ x-harness-defaults: &harness-defaults
   # the provider API host still needs outbound access. Add a network
   # policy at the host/firewall layer if you want per-model egress scoping.
 
-# Shared env block for every local-model service below (referenced with
-# a nested merge key, not repeated per model) -- everything each local
-# model needs EXCEPT OPENCODE_MODEL_ID, which differs per service.
-# 49604 (not opencode's common 4096-ish default) is deliberate: this is
-# a HOST-published port (Cyberdyne runs Axiom's own separate
-# opencode serve instance too), and 4096 risked colliding with it.
-# Picked from IANA's dynamic/private port range (49152-65535, RFC
-# 6335) specifically to avoid registered-service collisions -- not
-# verified against Axiom's actual chosen port, since that's outside
-# this repo's config. Override via OPENCODE_SERVE_PORT if it still
-# collides with anything: `OPENCODE_SERVE_PORT=<port> docker-compose up`.
-x-local-ollama-env: &local-ollama-env
-  OPENCODE_SERVER_URL: "http://localhost:${OPENCODE_SERVE_PORT:-49604}"
-  OPENCODE_MODEL_PROVIDER: local/ollama
-
-x-local-ollama-defaults: &local-ollama-defaults
-  <<: *harness-defaults
-  entrypoint: ["/usr/local/bin/entrypoint.sh"]
-  command: ["eval-client"]
-  # Host networking so this eval-client container reaches the server
-  # container's published port via localhost -- "server:4096" does NOT
-  # resolve on host networking (no user-defined-network DNS). This leg
-  # (eval-client -> server) is unrelated to and unaffected by the
-  # server -> Ollama networking note below. Linux-only; adjust for
-  # Docker Desktop on macOS/Windows.
-  network_mode: host
-  # No auth.json mount here, deliberately: entrypoint.sh's credential
-  # check is conditional on mode + provider now -- eval-client runs
-  # targeting local/ollama specifically don't need it, since Ollama
-  # needs no real authentication (config's "apiKey": "ollama" is a
-  # placeholder string, not a credential). Every other eval-client
-  # target still requires the mount -- see the `eval` service below.
-  volumes:
-    - ./task-suite:/task-suite:ro
-    - ./results:/results
-    # Read-only: only the server process writes here, client
-    # containers only read it to capture a run's server.log artifact
-    # (see run_eval_client.py's main() -- copies the log at the end of
-    # a run). Shared across ALL clients hitting this one persistent
-    # server, so it reflects everything the server has logged, not
-    # just this specific eval-client invocation -- see the code
-    # comment for the concurrent-runs caveat.
-    - opencode-log:/home/harness/.local/share/opencode/log:ro
-
 services:
   # Single, static, persistent opencode server. This is the whole point
   # of the redesign: no more per-model image builds -- model selection
@@ -74,8 +30,12 @@ services:
     command: ["serve"]
     # 49604: this is the HOST-published port -- 4096 (container-internal,
     # right side) risked colliding with Axiom's own separate opencode
-    # serve instance on the same host. See x-local-ollama-env's comment
-    # above for the full reasoning; same default, same override.
+    # serve instance on the same host. Picked from IANA's dynamic/private
+    # port range (49152-65535, RFC 6335) to avoid registered-service
+    # collisions -- not verified against Axiom's actual chosen port,
+    # since that's outside this repo's config. Override via
+    # OPENCODE_SERVE_PORT if it still collides: `OPENCODE_SERVE_PORT=<port>
+    # docker-compose up`.
     ports:
       - "${OPENCODE_SERVE_PORT:-49604}:4096"
     # Linux-only (matches Cyberdyne): routes host.docker.internal to the
@@ -222,41 +182,6 @@ services:
     volumes:
       - ./notebooks:/notebooks
     restart: unless-stopped
-
-  # Local Ollama-backed models. All five share x-local-ollama-defaults
-  # and x-local-ollama-env; only OPENCODE_MODEL_ID differs per service.
-  # Model IDs match `ollama list` on Cyberdyne as of 2026-07-20 --
-  # re-check that listing before relying on a name here if it's since
-  # changed.
-  gemma4-local:
-    <<: *local-ollama-defaults
-    environment:
-      <<: *local-ollama-env
-      OPENCODE_MODEL_ID: "gemma4:31b"
-
-  nemotron-3-nano-local:
-    <<: *local-ollama-defaults
-    environment:
-      <<: *local-ollama-env
-      OPENCODE_MODEL_ID: "nemotron-3-nano:30b"
-
-  qwen3-coder-local:
-    <<: *local-ollama-defaults
-    environment:
-      <<: *local-ollama-env
-      OPENCODE_MODEL_ID: "qwen3-coder:30b"
-
-  qwen3-coder-fixed-local:
-    <<: *local-ollama-defaults
-    environment:
-      <<: *local-ollama-env
-      OPENCODE_MODEL_ID: "qwen3-coder-fixed:30b"
-
-  qwen2.5-coder-local:
-    <<: *local-ollama-defaults
-    environment:
-      <<: *local-ollama-env
-      OPENCODE_MODEL_ID: "qwen2.5-coder:7b"
 
 # Shared between server (rw) and every client container (ro) -- lets
 # run_eval_client.py capture opencode's own server-side log as a

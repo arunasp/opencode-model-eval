@@ -378,64 +378,25 @@ resource "null_resource" "jupyter_connect_info" {
   }
 }
 
-# --- Local models (Ollama-backed) ---------------------------------------
-# Still needs network_mode = "host" to reach a host-run Ollama instance,
-# which the shared eval_net doesn't provide -- kept as its own resource
-# type for that reason. for_each over var.local_ollama_models: one
-# container per model, all sharing docker_image.harness, zero rebuild
-# cost to add a model here. Unlike cloud models (now discovery-only,
-# see docker_container.discover above), local models are still a
-# for_each over a fixed variable -- they're not a stale-goes-stale
-# static guess the way the old cloud matrix was, since
-# discover_local_ollama_models.py already re-derives what's actually
-# installed at container startup independent of this list.
-resource "docker_container" "local_ollama" {
-  for_each = var.local_ollama_models
-
-  name  = "opencode-model-eval-${each.key}"
-  image = docker_image.harness.image_id
-  # No depends_on = [terraform_data.auth_file_check] here, deliberately:
-  # entrypoint.sh's credential check is conditional on mode + provider
-  # now -- eval-client runs targeting local/ollama don't need real
-  # credentials, since Ollama needs no authentication at all (config's
-  # "apiKey": "ollama" is a placeholder string). server/discover/eval
-  # still depend on the check -- see their resource blocks.
-
-  entrypoint = ["/usr/local/bin/entrypoint.sh"]
-  command = ["eval-client"]
-
-  must_run     = false
-  attach       = false
-  rm           = false
-  network_mode = "host"
-  # network_mode = "host" is Linux-only in Docker; these resources will
-  # not behave the same under Docker Desktop on macOS/Windows. Also: on
-  # host networking, "server:4096" won't resolve (no user-defined
-  # network DNS) -- var.local_server_url points at localhost instead,
-  # which works because the server container publishes its port to the
-  # Docker host (see docker_container.server's ports block).
-
-  env = [
-    "OPENCODE_SERVER_URL=${var.local_server_url}",
-    "OPENCODE_MODEL_PROVIDER=local/ollama",
-    "OPENCODE_MODEL_ID=${each.value}",
-  ]
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/task-suite")
-    container_path = "/task-suite"
-    read_only      = true
-  }
-
-  volumes {
-    host_path      = abspath("${var.harness_root}/results")
-    container_path = "/results"
-    read_only      = false
-  }
-
-  volumes {
-    volume_name    = docker_volume.opencode_log.name
-    container_path = "/home/harness/.local/share/opencode/log"
-    read_only      = true
-  }
-}
+# Local Ollama models no longer have their own docker_container
+# resources here. They used to (one per model, for_each over
+# var.local_ollama_models, network_mode="host" to reach the server via
+# localhost) -- but Docker runs a container's command IMMEDIATELY upon
+# creation regardless of must_run=false, so every plain "Deploy
+# harness" (a full, untargeted terraform apply) was silently launching
+# all 5 of those as real eval-client runs against Ollama in parallel,
+# whether or not anyone had actually asked for an eval. Confirmed live
+# via a real deploy-terraform.log: all 5 fired together, immediately,
+# every single deploy.
+#
+# Local models now run the exact same way cloud models already do:
+# on-demand, via scripts/tf-select-and-run-eval.sh's one-shot `docker
+# run --rm ... eval-client` (see that script's local/ollama/<model>
+# direct-model handling), targeting the SAME already-running `server`
+# over the regular eval_net bridge network. host networking was never
+# actually required for this -- "server:4096" resolves fine via Docker
+# DNS on eval_net, same as discover/eval/git_workspace already rely on;
+# it just added a Linux-only Docker constraint and a separate
+# var.local_server_url mechanism for no real benefit. Exactly one model
+# runs at a time, through exactly one server -- no separate resource
+# type, no auto-fire-on-deploy risk.

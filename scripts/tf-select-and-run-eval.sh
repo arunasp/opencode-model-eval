@@ -65,11 +65,13 @@ fi
 
 dry_run=false
 list_json=false
+list_local_json=false
 direct_model=""
 for arg in "$@"; do
   case "$arg" in
     --dry-run) dry_run=true ;;
     --list-json) list_json=true ;;
+    --list-local-json) list_local_json=true ;;
     *) direct_model="$arg" ;;
   esac
 done
@@ -120,15 +122,45 @@ if [ "${list_json}" = true ]; then
   exec "${discover_base_cmd[@]}" --list-json
 fi
 
+if [ "${list_local_json}" = true ]; then
+  # Reads straight from the actual opencode config (single source of
+  # truth) rather than a separately-maintained list -- these are
+  # exactly the models opencode itself will accept for this provider,
+  # so there's no separate list to drift out of sync.
+  python3 -c "
+import json
+cfg = json.load(open('config/opencode.base.json'))
+models = list(cfg['provider']['local/ollama']['models'].keys())
+print(json.dumps([
+    {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}
+    for m in models
+]))
+"
+  exit 0
+fi
+
 # --- Step 1: resolve provider/model -------------------------------------
 if [ -n "${direct_model}" ]; then
-  if [[ "${direct_model}" != */* ]]; then
-    echo "error: model must be provider/id (e.g. opencode/hy3-free), got: ${direct_model}" >&2
+  if [[ "${direct_model}" == local/ollama/* ]]; then
+    # Special-cased: opencode's own provider config key IS "local/ollama"
+    # (two segments) as a single provider name -- the generic first-slash
+    # split below would wrongly split this as provider="local",
+    # model_id="ollama/<model>". This is what lets local models run
+    # through this exact same script/mechanism as cloud, targeting the
+    # same already-running `server` (see docker_container.local_ollama's
+    # removal comment in terraform/main.tf for why this replaced 5
+    # separate auto-firing containers).
+    provider="local/ollama"
+    model_id="${direct_model#local/ollama/}"
+    echo "Using directly (no discovery): ${provider}/${model_id}"
+  elif [[ "${direct_model}" == */* ]]; then
+    provider="${direct_model%%/*}"
+    model_id="${direct_model#*/}"
+    echo "Using directly (no discovery): ${provider}/${model_id}"
+  else
+    echo "error: model must be provider/id (e.g. opencode/hy3-free) or local/ollama/<model>, got: ${direct_model}" >&2
     exit 1
   fi
-  provider="${direct_model%%/*}"
-  model_id="${direct_model#*/}"
-  echo "Using directly (no discovery): ${provider}/${model_id}"
 elif [ -t 0 ]; then
   echo "No model given, real terminal detected -- fetching live candidates..."
   list_cmd=("${discover_base_cmd[@]}" --list-json)
