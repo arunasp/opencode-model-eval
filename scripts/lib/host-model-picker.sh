@@ -34,19 +34,55 @@
 # [ -t 0 ] themselves before calling this and fall back to a plain
 # prompt otherwise -- this function does not do that check itself.
 
+# _host_arrow_menu_draw <header-varname> <options-array-varname> <idx> <rows-out-varname>
+# Prints the header + highlighted option list, and writes the ACTUAL
+# number of physical terminal rows consumed (via the rows-out nameref)
+# so the caller's cursor-up redraw can move back exactly that far.
+#
+# Bug fixed here (pinned, screenshot evidence from a real 125-
+# candidate/9-provider run): the caller used to assume 1 printed line
+# == 1 physical row and moved the cursor up by a fixed count+1. That
+# breaks the moment any line is wider than the pane -- the provider
+# picker's header ("Discovered 125 free candidate(s) across 9
+# provider(s) -- pick a provider:", ~74 chars) wraps to multiple rows
+# in a ~35-36-col-wide menu pane, so the fixed-count cursor-up moved up
+# too few rows, leaving fragments of the old and new frames overlapping
+# on screen. Earlier tests never caught this because their synthetic
+# labels/counts were short enough to never wrap in a narrow pane.
 _host_arrow_menu_draw() {
   local -n _ham_header="$1"
   local -n _ham_opts="$2"
   local _ham_idx="$3"
-  local i
-  echo "$_ham_header" >&2
+  local -n _ham_rows_out="$4"
+  local cols
+  cols="$(tput cols 2>/dev/null)"
+  if [ -z "${cols}" ] || [ "${cols}" -le 0 ] 2>/dev/null; then
+    cols=80
+  fi
+
+  local i line_text len rows total=0
+
+  echo "${_ham_header}" >&2
+  len="${#_ham_header}"
+  rows=$(( (len + cols - 1) / cols ))
+  [ "${rows}" -lt 1 ] && rows=1
+  total=$((total + rows))
+
   for i in "${!_ham_opts[@]}"; do
-    if [ "$i" -eq "$_ham_idx" ]; then
+    if [ "${i}" -eq "${_ham_idx}" ]; then
+      line_text="  > ${_ham_opts[$i]}"
       printf '  \033[7m> %s\033[0m\n' "${_ham_opts[$i]}" >&2
     else
+      line_text="    ${_ham_opts[$i]}"
       printf '    %s\n' "${_ham_opts[$i]}" >&2
     fi
+    len="${#line_text}"
+    rows=$(( (len + cols - 1) / cols ))
+    [ "${rows}" -lt 1 ] && rows=1
+    total=$((total + rows))
   done
+
+  _ham_rows_out="${total}"
 }
 
 # host_arrow_menu <header> <option1> [option2 ...]
@@ -84,7 +120,8 @@ host_arrow_menu() {
   # returning, instead.
   trap 'stty "$old_stty" < /dev/tty; echo "Cancelled." >&2; exit 130' INT
 
-  _host_arrow_menu_draw header options "$idx"
+  local rows_printed=0
+  _host_arrow_menu_draw header options "$idx" rows_printed
   while true; do
     IFS= read -rsn1 key < /dev/tty
     case "$key" in
@@ -110,8 +147,8 @@ host_arrow_menu() {
         ;;
       *) : ;;  # unrecognized byte -- ignore, just redraw current state
     esac
-    printf '\033[%dA' "$((count + 1))" >&2
-    _host_arrow_menu_draw header options "$idx"
+    printf '\033[%dA' "${rows_printed}" >&2
+    _host_arrow_menu_draw header options "$idx" rows_printed
   done
 
   stty "$old_stty" < /dev/tty
