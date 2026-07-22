@@ -85,8 +85,26 @@ OPENCODE_LOG_PATH = Path("/home/harness/.local/share/opencode/log/opencode.log")
 # into a single "next attempt at this timestamp" signal via
 # GET /session/status -- this harness only needs ONE threshold applied
 # uniformly to that signal, not per-provider branching.
+#
+# NOT the same thing as backlog item 1 ("eval tests keep crunching past
+# Claude's own usage-quota ceiling until a separate 5-minute timeout
+# elsewhere stops them"). This mechanism is about the MODEL PROVIDER's
+# quota/rate limit (OpenCode Zen/Go, NVIDIA, etc.), observed via
+# opencode's own /session/status -- it already works correctly and is
+# unrelated to whatever session/tool-execution limit governs the
+# Claude Code agent driving this harness itself. That's out of scope
+# for this repo: there's no hook here into Claude Code's own runtime,
+# and no evidence that anything at this layer is the cause. Don't
+# conflate the two if this surfaces again.
 QUOTA_WAIT_THRESHOLD_S = float(os.environ.get("OPENCODE_QUOTA_WAIT_THRESHOLD_S", "3000"))  # 50 min default
 STATUS_POLL_INTERVAL_S = float(os.environ.get("OPENCODE_STATUS_POLL_INTERVAL_S", "5"))
+# Heartbeat cadence for stdout progress during a long-running tier --
+# deliberately separate from STATUS_POLL_INTERVAL_S (which stays fast,
+# 5s, for responsive quota-threshold detection). Printing on every 5s
+# poll would flood results/logs/ over a 50-minute wait; this caps
+# actual stdout output to once a minute by default while polling
+# itself stays frequent underneath.
+PROGRESS_PRINT_INTERVAL_S = float(os.environ.get("OPENCODE_PROGRESS_PRINT_INTERVAL_S", "60"))
 
 
 class _QuotaExhausted(Exception):
@@ -305,6 +323,8 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
 
+    wait_start = time.time()
+    last_progress_print = wait_start
     last_status_type = None
     while True:
         if done_event.wait(timeout=poll_interval_s):
@@ -322,9 +342,23 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             continue
 
         status_type = status.get("type")
-        if status_type != last_status_type or status_type == "retry":
-            events.append({"timestamp": time.time(), **status})
+        now = time.time()
+        if status_type != last_status_type:
+            events.append({"timestamp": now, **status})
+            print(f"[eval-client] status changed: {last_status_type} -> {status_type} "
+                  f"(elapsed {now - wait_start:.0f}s)", flush=True)
             last_status_type = status_type
+            last_progress_print = now
+        elif status_type == "retry" and now - last_progress_print >= PROGRESS_PRINT_INTERVAL_S:
+            # Heartbeat while stuck in the same state -- without this,
+            # a single stalled/retrying tier produces zero stdout for
+            # up to QUOTA_WAIT_THRESHOLD_S (50min default), which is
+            # exactly the "no way to tail a slow run's live progress"
+            # gap this fixes.
+            events.append({"timestamp": now, **status})
+            print(f"[eval-client] still waiting on retry (elapsed {now - wait_start:.0f}s, "
+                  f"threshold {quota_wait_threshold_s:.0f}s)", flush=True)
+            last_progress_print = now
 
         if status_type == "retry":
             next_ms = status.get("next")
