@@ -183,6 +183,15 @@ services:
     environment:
       OPENCODE_CONFIG: /opt/harness/opencode.git-workspace.json
       OPENCODE_SERVE_PORT: "4096"
+    # Confirmed missing: without this, nothing could reach this
+    # container's opencode serve instance at all, regardless of model
+    # selection. Model selection needs no config here -- same
+    # mechanism as the `server` service (which also never sets
+    # OPENCODE_MODEL and works fine live): whatever connects specifies
+    # provider/model per-session, exactly like run_eval_client.py
+    # already does against server.
+    ports:
+      - "${GIT_WORKSPACE_PORT:-49606}:4096"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
 

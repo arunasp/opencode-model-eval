@@ -28,6 +28,12 @@ variable "jupyter_port" {
   default     = 8888
 }
 
+variable "git_workspace_port" {
+  description = "Host port mapped to the git-workspace container's own opencode serve port (4096 internal, same as server -- but a DIFFERENT external port, since server already publishes 4096 internal to var.serve_port on the host and both containers can't publish the same external port simultaneously). Picked from the same IANA dynamic/private range as serve_port, one above jupyter_port's conventional 8888 isn't relevant here -- this just needs to not collide with serve_port (49604) or anything else already running."
+  type        = number
+  default     = 49606
+}
+
 variable "local_server_url" {
   description = "URL local-model eval containers (host networking, no shared-network DNS) use to reach the server container. Defaults to localhost since network_mode=host puts them on the same network namespace as the Docker host. Port must match var.serve_port -- kept as a separate variable rather than interpolated from it because Terraform doesn't allow referencing one variable's value in another variable's default."
   type        = string

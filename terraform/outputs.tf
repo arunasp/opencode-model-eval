@@ -2,7 +2,11 @@ output "next_step" {
   description = "Run this after apply to tail the server, then use scripts/tf-select-and-run-eval.sh (or `make tf-eval MODEL=...`) for a cloud eval run -- there's no static per-model container to tail anymore, see docker_container.discover's comment in main.tf."
   value = join("\n", concat(
     ["docker logs -f ${docker_container.server.name}   # persistent opencode serve"],
-    [for k, c in docker_container.local_ollama : "docker logs -f ${c.name}   # local/ollama/${var.local_ollama_models[k]}"]
+    [for k, c in docker_container.local_ollama : "docker logs -f ${c.name}   # local/ollama/${var.local_ollama_models[k]}"],
+    [
+      "docker logs ${docker_container.jupyter.name}   # jupyter lab -- URL+token printed here on first start (http://localhost:${var.jupyter_port}/?token=...)",
+      "http://localhost:${var.git_workspace_port}   # git-workspace's own opencode serve, once started (make tf-git-workspace) -- connect a client and specify provider/model per-session, same as server; there's no separate model picker for this role",
+    ]
   ))
 }
 

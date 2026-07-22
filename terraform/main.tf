@@ -274,6 +274,21 @@ resource "docker_container" "git_workspace" {
   attach   = false
   rm       = false
 
+  # Confirmed missing: without this, nothing could reach this
+  # container's opencode serve instance at all, regardless of model
+  # selection. Model selection itself needs no config here -- same
+  # mechanism as docker_container.server (which also never sets
+  # OPENCODE_MODEL and works fine live): whatever connects to this
+  # serve instance (opencode CLI's /connect, or an HTTP call) specifies
+  # provider/model per-session, exactly like run_eval_client.py already
+  # does against server. There's no separate model-picker to build for
+  # this role -- it's the same request-level mechanism, just a
+  # different serve instance/port.
+  ports {
+    internal = 4096
+    external = var.git_workspace_port
+  }
+
   volumes {
     host_path      = abspath("${var.harness_root}/auth-data/auth.json")
     container_path = "/home/harness/.local/share/opencode/auth.json"
