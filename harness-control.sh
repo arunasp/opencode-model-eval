@@ -265,7 +265,7 @@ view_logs() {
     return 1
   }
   run_in_output_pane \
-    "less $(printf '%q' "${selected}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
+    "less -R $(printf '%q' "${selected}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
 }
 
 while true; do
