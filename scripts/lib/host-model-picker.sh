@@ -114,6 +114,14 @@ _host_arrow_menu_draw() {
     total=$((total + 1))
   fi
 
+  # Persistent shortcuts footer -- shown on every menu everywhere,
+  # since this is the shared draw primitive every host_arrow_menu call
+  # goes through. Plain ASCII (no arrow glyphs) to avoid any locale-
+  # dependent width-counting surprises in the row-span math above,
+  # matching the plain-text style already used throughout this file.
+  printf '  Up/Down or j/k: move   Enter: select   q: cancel\033[K\n' >&2
+  total=$((total + 1))
+
   # Clear anything below this frame -- fixes a real bug found using
   # 78 real options in a 39-usable-row pane (tmux's own status bar
   # takes 1 row even when the window itself is 40 rows): when a
@@ -180,8 +188,9 @@ host_arrow_menu() {
   # Viewport size: how many options can actually fit. Reserve rows for
   # the header (itself could wrap -- use its own row-span, not just 1)
   # plus up to 2 scroll-indicator lines ("more above"/"more below")
-  # plus 1 row of margin. Computed from real terminal height (tput
-  # lines), same source of truth as the width-wrapping fix above.
+  # plus 1 row for the shortcuts footer plus 1 row of margin. Computed
+  # from real terminal height (tput lines), same source of truth as
+  # the width-wrapping fix above.
   local term_lines header_rows header_len cols_for_window
   term_lines="$(tput lines 2>/dev/null)"
   if [ -z "${term_lines}" ] || [ "${term_lines}" -le 0 ] 2>/dev/null; then
@@ -195,7 +204,7 @@ host_arrow_menu() {
   header_rows=$(( (header_len + cols_for_window - 1) / cols_for_window ))
   [ "${header_rows}" -lt 1 ] && header_rows=1
 
-  local window_size=$(( term_lines - header_rows - 3 ))
+  local window_size=$(( term_lines - header_rows - 4 ))
   [ "${window_size}" -lt 1 ] && window_size=1
   [ "${window_size}" -gt "${count}" ] && window_size="${count}"
   local window_start=0
