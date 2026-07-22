@@ -284,7 +284,7 @@ while true; do
     "Deploy harness") deploy || echo "Deploy failed -- see output above." >&2 ;;
     "Remove harness") remove || echo "Remove failed -- see output above." >&2 ;;
     "Run an eval") run_eval || echo "Eval run failed or was cancelled -- see output above." >&2 ;;
-    "View logs") view_logs ;;
+    "View logs") view_logs || true ;;
     Quit)
       tmux kill-session -t "${SESSION}" 2>/dev/null || true
       exit 0
