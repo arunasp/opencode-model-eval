@@ -182,6 +182,29 @@ remove() {
   esac
 }
 
+# jupyter_up / jupyter_down -- item 9's start/stop control surface.
+# Mirrors deploy/remove's pick_backend pattern rather than the one-shot
+# run_logged calls used for eval/discover, since Jupyter is meant to
+# stay running across an authoring session like `server`, not exit
+# immediately.
+jupyter_up() {
+  local backend
+  backend="$(pick_backend)" || return 1
+  case "$backend" in
+    Terraform) run_logged "jupyter-up-terraform" make tf-jupyter-up ;;
+    "Docker Compose") run_logged "jupyter-up-compose" make jupyter-up ;;
+  esac
+}
+
+jupyter_down() {
+  local backend
+  backend="$(pick_backend)" || return 1
+  case "$backend" in
+    Terraform) run_logged "jupyter-down-terraform" make tf-jupyter-down ;;
+    "Docker Compose") run_logged "jupyter-down-compose" make jupyter-down ;;
+  esac
+}
+
 # pick_cloud_model_terraform / pick_cloud_model_compose
 # Fetch the candidate list directly (not via run_in_output_pane --
 # this is a quick JSON fetch, not something worth streaming/logging)
@@ -272,10 +295,69 @@ view_logs() {
     "less -R $(printf '%q' "${selected}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
 }
 
+# browse_results -- distinct from view_logs: browses actual evaluation
+# RESULTS (results/<model_slug>/report.json + per-category CVV output),
+# not action/session logs. Two levels: pick a model, then pick either
+# its report.json summary or drill into one category's raw output
+# files. Read-only, same `less -R` open pattern as view_logs.
+browse_results() {
+  local -a models=()
+  if [ -d results ]; then
+    while IFS= read -r d; do
+      models+=("$(basename "$d")")
+    done < <(find results -mindepth 1 -maxdepth 1 -type d ! -name logs | sort)
+  fi
+  if [ "${#models[@]}" -eq 0 ]; then
+    echo "No results yet -- run an eval first." >&2
+    return 1
+  fi
+
+  local model
+  model="$(host_arrow_menu "Pick a model's results:" "${models[@]}")" || return 1
+
+  local report="results/${model}/report.json"
+  local -a options=()
+  [ -f "${report}" ] && options+=("report.json (summary)")
+  local -a categories=()
+  while IFS= read -r c; do
+    categories+=("$(basename "$c")")
+    options+=("category: $(basename "$c")")
+  done < <(find "results/${model}" -mindepth 1 -maxdepth 1 -type d | sort)
+
+  if [ "${#options[@]}" -eq 0 ]; then
+    echo "No report.json or category output found for ${model}." >&2
+    return 1
+  fi
+
+  local picked
+  picked="$(host_arrow_menu "results/${model} -- what to view?" "${options[@]}")" || return 1
+
+  if [ "${picked}" = "report.json (summary)" ]; then
+    run_in_output_pane \
+      "if command -v jq >/dev/null 2>&1; then jq . $(printf '%q' "${report}") | less -R; else less -R $(printf '%q' "${report}"); fi; tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
+    return
+  fi
+
+  local cat_name="${picked#category: }"
+  local -a files=()
+  while IFS= read -r f; do
+    files+=("$f")
+  done < <(find "results/${model}/${cat_name}" -maxdepth 1 -type f | sort)
+  if [ "${#files[@]}" -eq 0 ]; then
+    echo "No files found in results/${model}/${cat_name}." >&2
+    return 1
+  fi
+  local selected_file
+  selected_file="$(host_arrow_menu "results/${model}/${cat_name} -- pick a file:" "${files[@]}")" || return 1
+  run_in_output_pane \
+    "less -R $(printf '%q' "${selected_file}"); tmux wait-for -S $(printf '%q' "${WAIT_CHANNEL}")"
+}
+
 while true; do
   action="$(host_arrow_menu \
     "=== opencode-model-eval control ===" \
-    "Deploy harness" "Remove harness" "Run an eval" "View logs" "Quit")" || {
+    "Deploy harness" "Remove harness" "Run an eval" "View logs" "Browse results" \
+    "Start Jupyter" "Stop Jupyter" "Quit")" || {
     tmux kill-session -t "${SESSION}" 2>/dev/null || true
     exit 0
   }
@@ -285,6 +367,9 @@ while true; do
     "Remove harness") remove || echo "Remove failed -- see output above." >&2 ;;
     "Run an eval") run_eval || echo "Eval run failed or was cancelled -- see output above." >&2 ;;
     "View logs") view_logs || true ;;
+    "Browse results") browse_results || true ;;
+    "Start Jupyter") jupyter_up || echo "Jupyter start failed -- see output above." >&2 ;;
+    "Stop Jupyter") jupyter_down || echo "Jupyter stop failed -- see output above." >&2 ;;
     Quit)
       tmux kill-session -t "${SESSION}" 2>/dev/null || true
       exit 0
