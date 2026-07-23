@@ -326,6 +326,16 @@ resource "docker_container" "jupyter" {
   attach   = false
   rm       = false
 
+  host {
+    host = "host.docker.internal"
+    ip   = "host-gateway"
+  }
+
+  env = [
+    "OLLAMA_BASE_URL=${var.ollama_base_url}",
+    "OLLAMA_TAGS_URL=${var.ollama_tags_url}",
+  ]
+
   ports {
     internal = 8888
     external = var.jupyter_port
