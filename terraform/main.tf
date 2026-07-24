@@ -334,6 +334,7 @@ resource "docker_container" "jupyter" {
   env = [
     "OLLAMA_BASE_URL=${var.ollama_base_url}",
     "OLLAMA_TAGS_URL=${var.ollama_tags_url}",
+    "OPENCODE_BASE_URL=http://${one(docker_container.server.host[*].host)}:${one(docker_container.server.ports[*].external)}",
   ]
 
   ports {

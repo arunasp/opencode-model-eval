@@ -37,7 +37,7 @@ variable "git_workspace_port" {
 variable "ollama_base_url" {
   description = "URL the SERVER container (bridge networking) uses to reach a host-run Ollama instance. host.docker.internal:host-gateway only reaches services bound to 0.0.0.0; if Ollama is bound to 127.0.0.1 only (its default), this will not work until Ollama is started with OLLAMA_HOST=0.0.0.0:11434."
   type        = string
-  default     = "http://host.docker.internal:11434/v1"
+  default     = "http://host.docker.internal:11434"
 }
 
 variable "ollama_tags_url" {
