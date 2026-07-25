@@ -52,7 +52,7 @@ if [ "${mode}" = "eval-client" ] && [ "${OPENCODE_MODEL_PROVIDER:-}" = "local/ol
 fi
 
 if [ "${needs_auth}" = "true" ] && [ ! -f "${AUTH_PATH}" ]; then
-  fail "credentials not found at ${AUTH_PATH} — mount your host auth.json read-only to this path (see README). Not required if you're running eval-client against local/ollama specifically."
+  fail "credentials not found at ${AUTH_PATH} — mount your host auth.json read-only to this path (see INSTALL.md's Setup section). Not required if you're running eval-client against local/ollama specifically."
 fi
 
 case "${mode}" in
