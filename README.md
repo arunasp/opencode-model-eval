@@ -66,6 +66,30 @@ model selection moved to a runtime parameter instead. See
 [`docs/CODEGEN.md`](docs/CODEGEN.md)'s Docker section for the full
 reasoning.
 
+## Two deployment paths
+
+Terraform and Docker Compose are both fully supported, maintained in
+parallel on purpose — neither is deprecated or the "real" one.
+`harness-control.sh` asks "Which backend?" before every action (Deploy/
+Remove harness, Run an eval, Jupyter start/stop) and drives the
+equivalent command on whichever you pick:
+
+| Action | Terraform | Docker Compose |
+|---|---|---|
+| Deploy harness | `make tf-apply` | `docker-compose up -d server` |
+| Remove harness | `make tf-destroy` | `docker-compose down` |
+| Run an eval | `scripts/tf-select-and-run-eval.sh` | `scripts/select-and-run-eval.sh` |
+| Jupyter up/down | `make tf-jupyter-up` / `-down` | `make jupyter-up` / `-down` |
+
+Pick Terraform for plan/apply/destroy discipline and automatic
+credential extraction on `plan`/`apply` (see INSTALL.md). Pick Compose
+for a simpler, more direct path with no separate state file to manage.
+Both build from the same `Dockerfile` and share `docker-compose.yml`'s
+service definitions where Terraform's own resources don't need to
+diverge from them. See [Known gaps](#known-gaps-not-yet-handled-by-this-harness)
+for the one deliberate asymmetry between them (cloud eval runs are
+outside Terraform's state entirely, on both paths).
+
 ## Test ladder
 
 `task-suite/test_ladder.json` — 9 categories, 25 tiers total:
