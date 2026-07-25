@@ -24,8 +24,19 @@ deliver **to** (`opencode-model-eval-patch-0.2.0.tar.gz` lands you at
 
 ## Current state
 
-`v0.1.0` — initial environment: immutable base + shared harness + 
-per-model Docker/Terraform execution paths, scoped auth extraction,
-governance docs. No task suite content, no N-runs/why-chain scoring yet
-— see README's "Known gaps" section. Those are `v0.2.0`-or-later
-territory, not part of this tag.
+`v0.1.0` was planned early on to mean a minimal checkpoint (immutable
+base + shared harness + per-model execution paths + scoped auth
+extraction + governance docs, no test suite content yet) but was never
+actually tagged at that point — the repo kept moving and the tag kept
+getting deferred. By the time it's created, `v0.1.0` covers everything
+up through the harness's current real state instead: the shared
+harness image, both Terraform and Compose deployment paths, scoped
+auth extraction (now automatic under Terraform), the full 9-category/
+25-tier test ladder (`task-suite/test_ladder.json`), quota/rate-limit
+handling, per-run server log capture, the `git-workspace` and `jupyter`
+roles, the server-side session TTL reaper, static example notebooks,
+and the split `README.md`/`INSTALL.md`/`CHANGELOG.md`/`REQUIREMENTS.md`
+documentation. See `CHANGELOG.md` for the itemized history. Not part
+of this tag: agentic/tool-use tasks wired into the test ladder itself,
+cost/latency capture, N-runs/why-chain scoring — see README's "Known
+gaps" section. Those remain `v0.2.0`-or-later territory.

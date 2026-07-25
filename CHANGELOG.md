@@ -1,10 +1,13 @@
 # Changelog
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
-No version has been tagged yet (see `docs/VERSIONING.md`) -- everything
-below is `[Unreleased]`, in the order it landed.
+Tagged versions are created after merging to `main`, per
+`docs/BRANCHING.md`'s delivery convention -- see that file's
+"Versioning" section for the MAJOR/MINOR/PATCH rules applied here.
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-07-25
 
 ### Added
 
