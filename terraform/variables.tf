@@ -34,16 +34,22 @@ variable "git_workspace_port" {
   default     = 49606
 }
 
-variable "ollama_base_url" {
-  description = "URL the SERVER container (bridge networking) uses to reach a host-run Ollama instance. host.docker.internal:host-gateway only reaches services bound to 0.0.0.0; if Ollama is bound to 127.0.0.1 only (its default), this will not work until Ollama is started with OLLAMA_HOST=0.0.0.0:11434."
+variable "opencode_ollama_base_url" {
+  description = "OpenAI-compat baseURL the SERVER container's opencode local/ollama provider (@ai-sdk/openai-compatible) uses. MUST end in /v1 -- Ollama's Go router (server/routes.go) registers the OpenAI-compat surface literally at /v1/chat/completions etc, and the SDK does not inject /v1 itself. host.docker.internal:host-gateway only reaches services bound to 0.0.0.0; if Ollama is bound to 127.0.0.1 only (its default), this will not work until Ollama is started with OLLAMA_HOST=0.0.0.0:11434."
   type        = string
-  default     = "http://host.docker.internal:11434"
+  default     = "http://host.docker.internal:11434/v1"
 }
 
 variable "ollama_tags_url" {
-  description = "Ollama's native /api/tags endpoint (NOT the OpenAI-compat /v1 path) -- used by discover_local_ollama_models.py at server startup to auto-detect installed models, same host/port as var.ollama_base_url."
+  description = "Ollama's native /api/tags endpoint (NOT the OpenAI-compat /v1 path) -- used by discover_local_ollama_models.py at server startup to auto-detect installed models, same host/port as var.ollama_native_base_url."
   type        = string
   default     = "http://host.docker.internal:11434/api/tags"
+}
+
+variable "ollama_native_base_url" {
+  description = "Ollama's native API root (/api/chat, /api/generate, /api/ps -- no /v1) used by the JUPYTER container's notebooks and by run_eval_client.py's warm-up/unload logic. Distinct from var.opencode_ollama_base_url: Ollama registers these as two disjoint route trees server-side, so one URL cannot serve both consumers. Same host.docker.internal caveat as above."
+  type        = string
+  default     = "http://host.docker.internal:11434"
 }
 
 

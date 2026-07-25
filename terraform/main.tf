@@ -147,8 +147,8 @@ resource "docker_container" "server" {
   rm       = false
 
   # Linux-only (matches Cyberdyne): routes host.docker.internal to the
-  # docker host's bridge gateway. See var.ollama_base_url's description
-  # for the 0.0.0.0-bind caveat. Unverified beyond "resolves the
+  # docker host's bridge gateway. See var.opencode_ollama_base_url's
+  # description for the 0.0.0.0-bind caveat. Unverified beyond "resolves the
   # networking path correctly on paper" -- no Docker/Ollama access in
   # the environment this was authored in.
   host {
@@ -157,7 +157,7 @@ resource "docker_container" "server" {
   }
 
   env = [
-    "OPENCODE_OLLAMA_BASE_URL=${var.ollama_base_url}",
+    "OPENCODE_OLLAMA_BASE_URL=${var.opencode_ollama_base_url}",
     "OPENCODE_OLLAMA_TAGS_URL=${var.ollama_tags_url}",
   ]
 
@@ -332,7 +332,7 @@ resource "docker_container" "jupyter" {
   }
 
   env = [
-    "OLLAMA_BASE_URL=${var.ollama_base_url}",
+    "OLLAMA_BASE_URL=${var.ollama_native_base_url}",
     "OLLAMA_TAGS_URL=${var.ollama_tags_url}",
     "OPENCODE_BASE_URL=http://${one(docker_container.server.host[*].host)}:${one(docker_container.server.ports[*].external)}",
   ]
