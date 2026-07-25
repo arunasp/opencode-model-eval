@@ -7,7 +7,7 @@ Tagged versions are created after merging to `main`, per
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-07-25
+## [0.2.0] - 2026-07-25
 
 ### Added
 
