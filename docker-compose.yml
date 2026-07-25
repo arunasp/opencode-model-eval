@@ -52,6 +52,18 @@ services:
     environment:
       OPENCODE_OLLAMA_BASE_URL: "${OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}"
       OPENCODE_OLLAMA_TAGS_URL: "${OPENCODE_OLLAMA_TAGS_URL:-http://host.docker.internal:11434/api/tags}"
+      # session_reaper.py -- server-side TTL for sessions an abruptly
+      # disconnected client never aborted itself. See scripts/session_reaper.py's
+      # module docstring for why this exists (opencode has no native
+      # equivalent). Provider-scoped: local/ollama gets the aggressive
+      # 10min TTL (sustained Ollama residency is the actual cost this
+      # cuts), everything else gets the 60min fallback, which stays
+      # above run_eval_client.py's own 50min QUOTA_WAIT_THRESHOLD_S so
+      # it never preempts a legitimate cloud quota-retry wait.
+      OPENCODE_REAPER_ENABLED: "${OPENCODE_REAPER_ENABLED:-true}"
+      OPENCODE_LOCAL_SESSION_TTL_S: "${OPENCODE_LOCAL_SESSION_TTL_S:-600}"
+      OPENCODE_SESSION_TTL_S: "${OPENCODE_SESSION_TTL_S:-3600}"
+      OPENCODE_REAPER_POLL_INTERVAL_S: "${OPENCODE_REAPER_POLL_INTERVAL_S:-120}"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       - opencode-log:/home/harness/.local/share/opencode/log

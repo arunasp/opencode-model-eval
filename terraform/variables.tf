@@ -52,4 +52,28 @@ variable "ollama_native_base_url" {
   default     = "http://host.docker.internal:11434"
 }
 
+variable "session_reaper_enabled" {
+  description = "Runs scripts/session_reaper.py as a background loop inside the SERVER container, alongside opencode serve (see entrypoint.sh). opencode has no native session TTL -- this closes sessions an abruptly disconnected client never aborted itself, which was keeping local/ollama models persistently loaded."
+  type        = bool
+  default     = true
+}
+
+variable "local_session_ttl_s" {
+  description = "Idle threshold applied to sessions whose Session.Info.model.providerID matches the local/ollama provider key (see OPENCODE_OLLAMA_PROVIDER_KEY). Deliberately aggressive (10min default): sustained local/ollama residency is the actual resource cost this exists to cut. Provider-scoping confirmed reliable via source (session/prompt.ts:672-689 -- setAgentModel() always fires on a session's first message, since session.model starts unset), not guessed."
+  type        = number
+  default     = 600
+}
+
+variable "session_ttl_s" {
+  description = "Fallback idle threshold for everything else session_reaper.py sees: non-local providers, and sessions that haven't sent a first message yet (no model to scope by). Kept above run_eval_client.py's own 50min QUOTA_WAIT_THRESHOLD_S (3000s default) so it never preempts a legitimate cloud quota-retry wait -- var.local_session_ttl_s is the one doing the actual aggressive cleanup work."
+  type        = number
+  default     = 3600
+}
+
+variable "session_reaper_poll_interval_s" {
+  description = "How often session_reaper.py calls GET /session and checks each session's idle time against var.local_session_ttl_s or var.session_ttl_s."
+  type        = number
+  default     = 120
+}
+
 

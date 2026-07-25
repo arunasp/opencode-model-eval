@@ -73,12 +73,14 @@ RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-su
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
+COPY scripts/session_reaper.py /usr/local/bin/session_reaper.py
 COPY config/opencode.base.json /opt/harness/opencode.base.json
 # --chmod on COPY requires BuildKit -- Cyberdyne's Docker (29.1.3) has
 # no working buildx component ("BuildKit is enabled but the buildx
 # component is missing or broken"), so the legacy builder is what
 # actually runs here. Explicit RUN chmod instead: portable to both.
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/discover_local_ollama_models.py \
+    /usr/local/bin/session_reaper.py \
     && chmod 0644 /opt/harness/opencode.base.json
 
 ENV OPENCODE_CONFIG=/opt/harness/opencode.base.json

@@ -77,6 +77,9 @@ case "${mode}" in
       export OPENCODE_CONFIG="${runtime_config}"
     fi
 
+    log "starting session reaper in the background (server-side TTL for abruptly-disconnected clients -- opencode has no native equivalent, see scripts/session_reaper.py)"
+    python3 /usr/local/bin/session_reaper.py &
+
     log "starting opencode serve on ${HOSTNAME_BIND}:${PORT}"
     log "HOME resolved to: ${HOME}"
     log "OPENCODE_CONFIG resolved to: ${OPENCODE_CONFIG}"

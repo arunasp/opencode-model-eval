@@ -159,6 +159,10 @@ resource "docker_container" "server" {
   env = [
     "OPENCODE_OLLAMA_BASE_URL=${var.opencode_ollama_base_url}",
     "OPENCODE_OLLAMA_TAGS_URL=${var.ollama_tags_url}",
+    "OPENCODE_REAPER_ENABLED=${var.session_reaper_enabled}",
+    "OPENCODE_LOCAL_SESSION_TTL_S=${var.local_session_ttl_s}",
+    "OPENCODE_SESSION_TTL_S=${var.session_ttl_s}",
+    "OPENCODE_REAPER_POLL_INTERVAL_S=${var.session_reaper_poll_interval_s}",
   ]
 
   networks_advanced {
