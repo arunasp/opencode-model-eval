@@ -561,6 +561,21 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                 raise _QuotaExhausted(quota_info, setup_events + probe_events)
             print(".", end="", file=sys.stderr, flush=True)
             probe_text, probe_tools = extract_reply(probe_resp)
+            # Both round-trips succeeded -- close this tier's session now,
+            # regardless of what check_pass() below judges it as. This was
+            # the missing case: quota_aware_send_message() already aborts
+            # on a quota-bailout (its own "retry" threshold branch) and on
+            # any raw exception from send_message() itself, but a tier that
+            # completes normally -- the common case for every PASS and
+            # every judged FAIL -- fell through both of those and was never
+            # aborted at all, leaving opencode holding the session (and,
+            # for local/ollama, the model) open indefinitely. Confirmed
+            # live: this is what kept Ollama persistently resident even
+            # after the eval-client process producing the load was gone.
+            try:
+                abort_session(base_url, session_id)
+            except RuntimeError:
+                pass  # best-effort -- we already have the data we need
         except _QuotaExhausted as e:
             # Distinct from a generic RuntimeError below on purpose:
             # this means opencode's OWN retry loop (session/retry.ts,
