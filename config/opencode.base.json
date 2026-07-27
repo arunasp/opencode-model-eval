@@ -19,7 +19,8 @@
         "nemotron-3-nano:30b": {},
         "qwen3-coder:30b": {},
         "qwen3-coder-fixed:30b": {},
-        "qwen2.5-coder:7b": {}
+        "qwen2.5-coder:7b": {},
+        "NitrAI/VibeThinker-3B:latest": {}
       }
     }
   }
