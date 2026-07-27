@@ -259,15 +259,20 @@ pick_local_model_terraform() {
 }
 
 pick_local_model_compose() {
-  # Same config/opencode.base.json source of truth as
+  # Same real global opencode config source of truth as
   # tf-select-and-run-eval.sh's --list-local-json -- no
   # docker-compose-service-derived list anymore now that the 5
   # dedicated per-model services are gone (see docker-compose.yml's
-  # local-ollama-defaults removal comment).
+  # local-ollama-defaults removal comment), and no project-local static
+  # list anymore either as of the batch-4 migration.
+  if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
+    echo "Failed to fetch local model list: OPENCODE_GLOBAL_CONFIG not set (see REQUIREMENTS.md)." >&2
+    return 1
+  fi
   local candidates_json
   candidates_json="$(python3 -c "
-import json
-cfg = json.load(open('config/opencode.base.json'))
+import json, os
+cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
 models = list(cfg['provider']['local/ollama']['models'].keys())
 print(json.dumps([
     {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}

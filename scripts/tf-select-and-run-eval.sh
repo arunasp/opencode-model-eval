@@ -123,13 +123,19 @@ if [ "${list_json}" = true ]; then
 fi
 
 if [ "${list_local_json}" = true ]; then
-  # Reads straight from the actual opencode config (single source of
-  # truth) rather than a separately-maintained list -- these are
-  # exactly the models opencode itself will accept for this provider,
-  # so there's no separate list to drift out of sync.
+  # Reads from your real global opencode config (OPENCODE_GLOBAL_CONFIG)
+  # rather than a separately-maintained list -- these are exactly the
+  # models opencode itself will accept for this provider (the actual
+  # source of truth as of the batch-4 migration; this project no longer
+  # keeps its own copy), so there's no separate list to drift out of sync.
+  if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
+    echo "error: OPENCODE_GLOBAL_CONFIG not set -- required as of the batch-4 migration," >&2
+    echo "  see REQUIREMENTS.md (e.g. export OPENCODE_GLOBAL_CONFIG=\"\$HOME/.config/opencode/opencode.json\")" >&2
+    exit 1
+  fi
   python3 -c "
-import json
-cfg = json.load(open('config/opencode.base.json'))
+import json, os
+cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
 models = list(cfg['provider']['local/ollama']['models'].keys())
 print(json.dumps([
     {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}

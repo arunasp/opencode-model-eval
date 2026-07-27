@@ -17,9 +17,10 @@
 #     inside docker-compose; moved out because picking a model is a
 #     host-terminal concern, not something that belongs inside a
 #     container.
-#   - Local Ollama models: read from config/opencode.base.json's
-#     provider["local/ollama"]["models"] keys (the actual opencode
-#     config, single source of truth) and run through the SAME
+#   - Local Ollama models: read from your real global opencode config
+#     (OPENCODE_GLOBAL_CONFIG, provider["local/ollama"]["models"] --
+#     the actual source of truth as of the batch-4 migration; this
+#     project no longer maintains its own copy) and run through the SAME
 #     generic `eval` service as cloud models, via explicit
 #     OPENCODE_MODEL_PROVIDER/OPENCODE_MODEL_ID env vars -- not 5
 #     dedicated per-model services with their own host networking
@@ -47,9 +48,14 @@ if ! command -v docker-compose >/dev/null 2>&1; then
   exit 1
 fi
 
+if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
+  echo "error: OPENCODE_GLOBAL_CONFIG not set -- required as of the batch-4 migration," >&2
+  echo "  see REQUIREMENTS.md (e.g. export OPENCODE_GLOBAL_CONFIG=\"\$HOME/.config/opencode/opencode.json\")" >&2
+  exit 1
+fi
 LOCAL_MODELS="$(python3 -c "
-import json
-cfg = json.load(open('config/opencode.base.json'))
+import json, os
+cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
 print('\n'.join(cfg['provider']['local/ollama']['models'].keys()))
 ")"
 
@@ -171,7 +177,7 @@ for i in "${!names[@]}"; do
   fi
 done
 echo
-echo "Local (Ollama, from config/opencode.base.json):"
+echo "Local (Ollama, from your global opencode config):"
 for i in "${!names[@]}"; do
   if [ "${kinds[$i]}" = "local" ]; then
     printf "  %2d) %s\n" "$((i+1))" "${names[$i]}"
