@@ -70,15 +70,11 @@ fi
 
 if [ -n "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
   if [ -f "${OPENCODE_GLOBAL_CONFIG}" ]; then
-    if python3 -c "
-import json, sys
-data = json.load(open('${OPENCODE_GLOBAL_CONFIG}'))
-models = data.get('provider', {}).get('local/ollama', {}).get('models', {})
-sys.exit(0 if models else 1)
-" 2>/dev/null; then
+    MODELS_OUT="$(python3 scripts/tools/read_local_ollama_models.py 2>/dev/null)" || MODELS_OUT=""
+    if [ -n "${MODELS_OUT}" ]; then
       ok "OPENCODE_GLOBAL_CONFIG (${OPENCODE_GLOBAL_CONFIG}): valid, local/ollama models declared"
     else
-      bad "OPENCODE_GLOBAL_CONFIG (${OPENCODE_GLOBAL_CONFIG}) has no provider[\"local/ollama\"][\"models\"] entries -- local Ollama models won't resolve, see REQUIREMENTS.md"
+      bad "OPENCODE_GLOBAL_CONFIG (${OPENCODE_GLOBAL_CONFIG}) has no provider[\"local/ollama\"][\"models\"] entries, or isn't valid JSONC -- local Ollama models won't resolve, see REQUIREMENTS.md"
     fi
   else
     bad "OPENCODE_GLOBAL_CONFIG is set but ${OPENCODE_GLOBAL_CONFIG} doesn't exist"

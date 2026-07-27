@@ -55,11 +55,7 @@ if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
   echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
   exit 1
 fi
-LOCAL_MODELS="$(python3 -c "
-import json, os
-cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
-print('\n'.join(cfg['provider']['local/ollama']['models'].keys()))
-")"
+LOCAL_MODELS="$(python3 scripts/tools/read_local_ollama_models.py)"
 
 dry_run=false
 direct_name=""

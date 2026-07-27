@@ -135,15 +135,7 @@ if [ "${list_local_json}" = true ]; then
     echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
     exit 1
   fi
-  python3 -c "
-import json, os
-cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
-models = list(cfg['provider']['local/ollama']['models'].keys())
-print(json.dumps([
-    {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}
-    for m in models
-]))
-"
+  python3 scripts/tools/read_local_ollama_models.py --json
   exit 0
 fi
 

@@ -272,15 +272,7 @@ pick_local_model_compose() {
   # scripts/lib/opencode-global-config.sh, sourced near the top of this
   # file, defaults it if not already exported.
   local candidates_json
-  candidates_json="$(python3 -c "
-import json, os
-cfg = json.load(open(os.environ['OPENCODE_GLOBAL_CONFIG']))
-models = list(cfg['provider']['local/ollama']['models'].keys())
-print(json.dumps([
-    {'provider': 'local/ollama', 'model': m, 'full_id': f'local/ollama/{m}'}
-    for m in models
-]))
-")" || {
+  candidates_json="$(python3 scripts/tools/read_local_ollama_models.py --json)" || {
     echo "Failed to fetch local model list." >&2
     return 1
   }
