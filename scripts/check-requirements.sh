@@ -68,6 +68,25 @@ else
   bad "python3 not found on PATH -- required"
 fi
 
+if [ -n "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
+  if [ -f "${OPENCODE_GLOBAL_CONFIG}" ]; then
+    if python3 -c "
+import json, sys
+data = json.load(open('${OPENCODE_GLOBAL_CONFIG}'))
+models = data.get('provider', {}).get('local/ollama', {}).get('models', {})
+sys.exit(0 if models else 1)
+" 2>/dev/null; then
+      ok "OPENCODE_GLOBAL_CONFIG (${OPENCODE_GLOBAL_CONFIG}): valid, local/ollama models declared"
+    else
+      bad "OPENCODE_GLOBAL_CONFIG (${OPENCODE_GLOBAL_CONFIG}) has no provider[\"local/ollama\"][\"models\"] entries -- local Ollama models won't resolve, see REQUIREMENTS.md"
+    fi
+  else
+    bad "OPENCODE_GLOBAL_CONFIG is set but ${OPENCODE_GLOBAL_CONFIG} doesn't exist"
+  fi
+else
+  bad "OPENCODE_GLOBAL_CONFIG not set -- required, see REQUIREMENTS.md (e.g. export OPENCODE_GLOBAL_CONFIG=\"\$HOME/.config/opencode/opencode.json\")"
+fi
+
 section "Primary entry point (harness-control.sh)"
 check_bin tmux "tmux" hard
 if [ -t 0 ]; then

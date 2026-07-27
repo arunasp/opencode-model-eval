@@ -76,4 +76,10 @@ variable "session_reaper_poll_interval_s" {
   default     = 120
 }
 
+variable "opencode_global_config_path" {
+  description = "Host path to your own real opencode global config (~/.config/opencode/opencode.json). Mounted read-only into every container that runs opencode, at the same path opencode's own config.ts loadGlobal() expects (confirmed via source: xdg-basedir's config dir, joined with the app name -- ~/.config/opencode on a standard XDG-compliant Linux setup). This is what supplies provider/model declarations now -- see REQUIREMENTS.md for the format expected. Loaded BEFORE this project's own OPENCODE_CONFIG, which only overlays the permission/baseURL overrides each role actually needs to differ (confirmed via source: OPENCODE_CONFIG is a merge on top, not a replacement)."
+  type        = string
+  default     = "~/.config/opencode/opencode.json"
+}
+
 

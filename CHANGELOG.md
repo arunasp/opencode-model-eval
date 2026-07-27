@@ -7,6 +7,27 @@ Tagged versions are created after merging to `main`, per
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+- **Removed this project's own static `provider["local/ollama"]["models"]`
+  list from `config/opencode.base.json` and `config/opencode.git-workspace.json`.**
+  Every container that runs opencode now mounts your real
+  `~/.config/opencode/opencode.json` read-only and merges it *under* the
+  project's own config (confirmed via source: `config.ts`'s `loadGlobal()`
+  always loads first, `OPENCODE_CONFIG` overlays on top -- an override,
+  not a replacement, so the project's `permission`/`baseURL` settings still
+  win regardless of what your global file sets on this same provider).
+  **Requires exporting `OPENCODE_GLOBAL_CONFIG`** (absolute path, not
+  defaulted to a `~`-prefixed path -- confirmed via real `docker/compose`
+  issues #6506/#3872 that tilde expansion in a Compose volume path is
+  inconsistent) before running `docker-compose` or `terraform apply`, and
+  requires your own global config to actually declare
+  `provider["local/ollama"]["models"]` for whatever local models you use.
+  See REQUIREMENTS.md and INSTALL.md for the exact format expected.
+  This replaces having to hand-edit 2-3 JSON files every time a new local
+  model is pulled with editing exactly one -- your own global config --
+  which you'd naturally already be keeping current for other opencode use.
+
 ## [0.2.0] - 2026-07-25
 
 ### Added

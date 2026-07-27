@@ -6,6 +6,28 @@ automatically.
 
 ## Setup
 
+**First, export `OPENCODE_GLOBAL_CONFIG`** so every container can find your
+real opencode global config:
+
+```bash
+export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
+```
+
+This project no longer maintains its own static list of local Ollama
+models — `config/opencode.base.json` and `config/opencode.git-workspace.json`
+both merge *under* your own global config (confirmed via opencode's source:
+`config.ts`'s `loadGlobal()` loads first, the project's `OPENCODE_CONFIG`
+overlays on top as an override, not a replacement). Your global config's
+`provider["local/ollama"]["models"]` entries are what makes a given model
+resolvable at all now. If you add a new local model (`ollama pull ...`),
+add it there too — no project file needs editing. See REQUIREMENTS.md for
+the exact format expected. Not set to a `~`-prefixed default in
+`docker-compose.yml` deliberately — tilde expansion in a Compose volume
+path is inconsistent across compose versions (confirmed via real
+`docker/compose` issues #6506, #3872), so this needs to be a real
+shell-expanded absolute path, exported before you run `docker-compose` or
+`terraform apply`.
+
 Scope credentials down to the one provider key each container actually
 needs, rather than mounting your real (likely multi-provider) auth.json
 wholesale:

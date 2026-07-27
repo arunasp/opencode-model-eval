@@ -66,6 +66,21 @@ services:
       OPENCODE_REAPER_POLL_INTERVAL_S: "${OPENCODE_REAPER_POLL_INTERVAL_S:-120}"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      # Global opencode config -- your own local/ollama provider/model
+      # declarations, merged UNDER this project's own OPENCODE_CONFIG
+      # (confirmed via source: config.ts's loadGlobal() always loads this
+      # first, OPENCODE_CONFIG merges on top -- an override, not a
+      # replacement). See REQUIREMENTS.md for the format expected here.
+      # OPENCODE_GLOBAL_CONFIG must be an ABSOLUTE path, exported by your
+      # shell before running docker-compose -- e.g.:
+      #   export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
+      # Deliberately NOT defaulted to a `~`-prefixed path here: confirmed
+      # via real docker/compose issues (#6506, #3872) that tilde expansion
+      # in a volumes host path is inconsistent across compose versions and
+      # container-vs-native installs -- safer to require the shell (which
+      # always expands $HOME correctly) to hand compose an already-resolved
+      # absolute path than to trust compose's own expansion of `~`.
+      - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
       - opencode-log:/home/harness/.local/share/opencode/log
     restart: unless-stopped
     healthcheck:
@@ -84,6 +99,21 @@ services:
     entrypoint: ["python3", "/usr/local/bin/discover_and_select_model.py"]
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      # Global opencode config -- your own local/ollama provider/model
+      # declarations, merged UNDER this project's own OPENCODE_CONFIG
+      # (confirmed via source: config.ts's loadGlobal() always loads this
+      # first, OPENCODE_CONFIG merges on top -- an override, not a
+      # replacement). See REQUIREMENTS.md for the format expected here.
+      # OPENCODE_GLOBAL_CONFIG must be an ABSOLUTE path, exported by your
+      # shell before running docker-compose -- e.g.:
+      #   export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
+      # Deliberately NOT defaulted to a `~`-prefixed path here: confirmed
+      # via real docker/compose issues (#6506, #3872) that tilde expansion
+      # in a volumes host path is inconsistent across compose versions and
+      # container-vs-native installs -- safer to require the shell (which
+      # always expands $HOME correctly) to hand compose an already-resolved
+      # absolute path than to trust compose's own expansion of `~`.
+      - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
       - ./results:/results
       # Read-write, not read-only: `opencode models --verbose` here is
       # a raw CLI invocation (not a request to the persistent server),
@@ -139,6 +169,21 @@ services:
     volumes:
       - ./task-suite:/task-suite:ro
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      # Global opencode config -- your own local/ollama provider/model
+      # declarations, merged UNDER this project's own OPENCODE_CONFIG
+      # (confirmed via source: config.ts's loadGlobal() always loads this
+      # first, OPENCODE_CONFIG merges on top -- an override, not a
+      # replacement). See REQUIREMENTS.md for the format expected here.
+      # OPENCODE_GLOBAL_CONFIG must be an ABSOLUTE path, exported by your
+      # shell before running docker-compose -- e.g.:
+      #   export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
+      # Deliberately NOT defaulted to a `~`-prefixed path here: confirmed
+      # via real docker/compose issues (#6506, #3872) that tilde expansion
+      # in a volumes host path is inconsistent across compose versions and
+      # container-vs-native installs -- safer to require the shell (which
+      # always expands $HOME correctly) to hand compose an already-resolved
+      # absolute path than to trust compose's own expansion of `~`.
+      - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
       - ./results:/results
       - opencode-log:/home/harness/.local/share/opencode/log:ro
 
@@ -177,6 +222,21 @@ services:
       - "${GIT_WORKSPACE_PORT:-49606}:4096"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      # Global opencode config -- your own local/ollama provider/model
+      # declarations, merged UNDER this project's own OPENCODE_CONFIG
+      # (confirmed via source: config.ts's loadGlobal() always loads this
+      # first, OPENCODE_CONFIG merges on top -- an override, not a
+      # replacement). See REQUIREMENTS.md for the format expected here.
+      # OPENCODE_GLOBAL_CONFIG must be an ABSOLUTE path, exported by your
+      # shell before running docker-compose -- e.g.:
+      #   export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
+      # Deliberately NOT defaulted to a `~`-prefixed path here: confirmed
+      # via real docker/compose issues (#6506, #3872) that tilde expansion
+      # in a volumes host path is inconsistent across compose versions and
+      # container-vs-native installs -- safer to require the shell (which
+      # always expands $HOME correctly) to hand compose an already-resolved
+      # absolute path than to trust compose's own expansion of `~`.
+      - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
 
   # Persistent Jupyter server for hand-authoring/debugging custom-test
   # notebooks (item 9 of the pinned backlog) -- NOT the headless

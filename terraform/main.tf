@@ -181,6 +181,17 @@ resource "docker_container" "server" {
     read_only      = true
   }
 
+  # Your own real opencode global config -- provider/model declarations now
+  # live here instead of a static list duplicated in this project's own
+  # config files. See var.opencode_global_config_path's description for why
+  # this is safe (permission stays enforced by this project's own
+  # OPENCODE_CONFIG, which overlays on top, not replaced by this).
+  volumes {
+    host_path      = pathexpand(var.opencode_global_config_path)
+    container_path = "/home/harness/.config/opencode/opencode.json"
+    read_only      = true
+  }
+
   volumes {
     volume_name    = docker_volume.opencode_log.name
     container_path = "/home/harness/.local/share/opencode/log"
@@ -225,6 +236,17 @@ resource "docker_container" "discover" {
   volumes {
     host_path      = abspath("${var.harness_root}/auth-data/auth.json")
     container_path = "/home/harness/.local/share/opencode/auth.json"
+    read_only      = true
+  }
+
+  # Your own real opencode global config -- provider/model declarations now
+  # live here instead of a static list duplicated in this project's own
+  # config files. See var.opencode_global_config_path's description for why
+  # this is safe (permission stays enforced by this project's own
+  # OPENCODE_CONFIG, which overlays on top, not replaced by this).
+  volumes {
+    host_path      = pathexpand(var.opencode_global_config_path)
+    container_path = "/home/harness/.config/opencode/opencode.json"
     read_only      = true
   }
 
@@ -296,6 +318,17 @@ resource "docker_container" "git_workspace" {
   volumes {
     host_path      = abspath("${var.harness_root}/auth-data/auth.json")
     container_path = "/home/harness/.local/share/opencode/auth.json"
+    read_only      = true
+  }
+
+  # Your own real opencode global config -- provider/model declarations now
+  # live here instead of a static list duplicated in this project's own
+  # config files. See var.opencode_global_config_path's description for why
+  # this is safe (permission stays enforced by this project's own
+  # OPENCODE_CONFIG, which overlays on top, not replaced by this).
+  volumes {
+    host_path      = pathexpand(var.opencode_global_config_path)
+    container_path = "/home/harness/.config/opencode/opencode.json"
     read_only      = true
   }
 }
