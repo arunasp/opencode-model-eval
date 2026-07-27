@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
 """discover_local_ollama_models.py
 
-Queries a running Ollama instance's native /api/tags endpoint and merges
-the discovered model names into the "local/ollama" provider's "models"
-map of a base opencode config, writing the result to a new path.
+Queries a running Ollama instance's native /api/tags endpoint (URL
+sourced from opencode configuration via OPENCODE_OLLAMA_TAGS_URL, not
+hardcoded) and merges the discovered model names into the
+"local/ollama" provider's "models" map of a base opencode config,
+writing the result to a new path.
 
 Why this exists: opencode (released, not the still-open/unmerged
 anomalyco/opencode#27554) does not auto-discover models for
 @ai-sdk/openai-compatible providers -- every model ID must be listed
-explicitly in config for opencode to route requests to it. Rather than
-hand-maintain that list across three files (config/opencode.base.json,
-docker-compose.yml, terraform/variables.tf) every time a model is
-pulled or removed on the host, this queries Ollama directly at
-container startup, matching the "smart, auto-detect" pattern Axiom
-already uses on the host side -- done here at the harness level since
-opencode itself doesn't do it yet.
+explicitly in config for opencode to route requests to it. This queries
+Ollama directly at container startup, matching the "smart, auto-detect"
+pattern Axiom already uses on the host side -- done here at the harness
+level since opencode itself doesn't do it yet.
+
+Source of truth as of the batch-4 migration (confirmed via opencode's
+own source): your real global opencode config
+(~/.config/opencode/opencode.json, via OPENCODE_GLOBAL_CONFIG) is the
+actual source of truth for provider/model declarations, loaded by
+opencode's own config.ts:loadGlobal() before anything else. This
+script's live /api/tags query is an ADDITIVE layer on top, not a
+replacement or fallback -- deep-merge semantics mean a model your global
+config declares survives even if Ollama doesn't currently report it
+(e.g. not pulled yet on this machine), while whatever Ollama actually
+has loaded gets added automatically without needing manual config
+edits. Confirmed intentional design, not a gap to fix.
 
 Graceful degradation, not a hard dependency: if Ollama is unreachable
 (offline, wrong URL, still starting up), this writes the base config
-UNCHANGED rather than failing -- discovery is a nice-to-have on top of
-the static fallback list already in config/opencode.base.json, not a
-replacement for it. Mirrors the "Errors are swallowed silently" design
-in the real upstream PR's discovery mechanism.
+UNCHANGED rather than failing -- the base config's own
+provider["local/ollama"]["models"] may be empty post-batch-4 (this
+project no longer maintains a static list there), in which case your
+global config -- merged in separately by opencode itself, upstream of
+this script -- is what's actually relied on in that case. Mirrors the
+"Errors are swallowed silently" design in the real upstream PR's
+discovery mechanism.
 
 Usage:
     python3 discover_local_ollama_models.py \\
@@ -47,7 +61,9 @@ def fetch_ollama_model_names(tags_url: str, timeout: float) -> list[str]:
 
     Raises on any failure (timeout, connection refused, bad JSON,
     unexpected shape) -- caller decides what "failure" means (here:
-    fall back to the static list, don't crash startup).
+    leave the base config's own local/ollama.models as-is, don't crash
+    startup; your global config, merged in separately by opencode
+    itself, is what's actually relied on for models in that case).
     """
     with urllib.request.urlopen(tags_url, timeout=timeout) as resp:
         body = json.loads(resp.read())
@@ -98,14 +114,16 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"[discover_local_ollama_models] Ollama unreachable at "
             f"{args.ollama_tags_url} ({e.__class__.__name__}: {e}) -- "
-            "falling back to the static model list already in "
-            f"{args.base_config}. This is expected if Ollama isn't "
-            "running yet or OLLAMA_HOST isn't set to 0.0.0.0.",
+            f"leaving {args.base_config}'s local/ollama.models unchanged "
+            "(your global opencode config, merged in separately by "
+            "opencode itself, is what's actually relied on for models "
+            "in that case). This is expected if Ollama isn't running "
+            "yet or OLLAMA_HOST isn't set to 0.0.0.0.",
             file=sys.stderr,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(base_config, indent=2))
-        return 0  # not a fatal condition -- static fallback is valid
+        return 0  # not a fatal condition -- your global config still covers models
 
     merged = merge_models(base_config, args.provider_key, model_names)
     args.output.parent.mkdir(parents=True, exist_ok=True)

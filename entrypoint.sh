@@ -59,11 +59,13 @@ case "${mode}" in
   serve)
     # Auto-detect local Ollama models before opencode starts, so the
     # config reflects whatever's actually installed on the host right
-    # now rather than a hardcoded list going stale every time a model
-    # is pulled/removed on Cyberdyne. Graceful: if Ollama is
-    # unreachable, the discovery script writes the baked-in static
-    # list unchanged (see discover_local_ollama_models.py) -- this is
-    # never allowed to block or fail startup.
+    # now, additively on top of whatever your global opencode config
+    # already declares (opencode's own config.ts:loadGlobal() merges
+    # that in separately, upstream of this script -- see
+    # discover_local_ollama_models.py's docstring). Graceful: if Ollama
+    # is unreachable, this leaves local/ollama.models as-is rather than
+    # blocking or failing startup -- your global config still covers
+    # models in that case.
     runtime_config="${HOME}/.config/opencode/opencode.runtime.json"
     log "discovering local Ollama models before startup..."
     python3 /usr/local/bin/discover_local_ollama_models.py \
@@ -72,7 +74,7 @@ case "${mode}" in
       --output "${runtime_config}" \
       --provider-key "${OPENCODE_OLLAMA_PROVIDER_KEY:-local/ollama}" \
       --timeout "${OPENCODE_OLLAMA_DISCOVERY_TIMEOUT:-3}" \
-      || log "discovery script itself failed unexpectedly (not just Ollama-unreachable) -- continuing with baked-in static config at ${OPENCODE_CONFIG}, not blocking startup over this"
+      || log "discovery script itself failed unexpectedly (not just Ollama-unreachable) -- continuing with OPENCODE_CONFIG at ${OPENCODE_CONFIG} unchanged, your global config still covers models, not blocking startup over this"
     if [ -f "${runtime_config}" ]; then
       export OPENCODE_CONFIG="${runtime_config}"
     fi
