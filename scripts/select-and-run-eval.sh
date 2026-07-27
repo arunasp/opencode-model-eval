@@ -39,6 +39,9 @@
 #   bash scripts/select-and-run-eval.sh opencode/hy3-free  # direct provider/id, no discovery at all
 set -euo pipefail
 
+# shellcheck source=/dev/null
+source scripts/lib/opencode-global-config.sh
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
 source scripts/lib/host-model-picker.sh
@@ -49,8 +52,7 @@ if ! command -v docker-compose >/dev/null 2>&1; then
 fi
 
 if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
-  echo "error: OPENCODE_GLOBAL_CONFIG not set -- required as of the batch-4 migration," >&2
-  echo "  see REQUIREMENTS.md (e.g. export OPENCODE_GLOBAL_CONFIG=\"\$HOME/.config/opencode/opencode.json\")" >&2
+  echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
   exit 1
 fi
 LOCAL_MODELS="$(python3 -c "

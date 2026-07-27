@@ -71,6 +71,15 @@ help:
 	@echo "make tf-jupyter-up                 same, Terraform side"
 	@echo "make tf-jupyter-down               same, Terraform side"
 
+# Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
+# does (var.opencode_global_config_path's own default) -- ?= only takes
+# effect if not already set from the environment or a prior assignment,
+# and $(HOME) is Make's own reliable built-in, not dependent on
+# docker-compose's interpolation (whose nested-default support is a v2
+# feature this machine's installed 1.29.2 doesn't have).
+OPENCODE_GLOBAL_CONFIG ?= $(HOME)/.config/opencode/opencode.json
+export OPENCODE_GLOBAL_CONFIG
+
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
 

@@ -48,6 +48,9 @@
 # values, so no `terraform output` round-trip is needed to find them).
 set -euo pipefail
 
+# shellcheck source=/dev/null
+source scripts/lib/opencode-global-config.sh
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
 source scripts/lib/host-model-picker.sh
@@ -129,8 +132,7 @@ if [ "${list_local_json}" = true ]; then
   # source of truth as of the batch-4 migration; this project no longer
   # keeps its own copy), so there's no separate list to drift out of sync.
   if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
-    echo "error: OPENCODE_GLOBAL_CONFIG not set -- required as of the batch-4 migration," >&2
-    echo "  see REQUIREMENTS.md (e.g. export OPENCODE_GLOBAL_CONFIG=\"\$HOME/.config/opencode/opencode.json\")" >&2
+    echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
     exit 1
   fi
   python3 -c "

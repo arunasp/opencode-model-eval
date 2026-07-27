@@ -61,6 +61,9 @@
 # script or CI.
 set -euo pipefail
 
+# shellcheck source=/dev/null
+source scripts/lib/opencode-global-config.sh
+
 # Resolve an absolute path to this script BEFORE cd'ing, so the
 # tmux-bootstrap re-exec below can find it regardless of how it was
 # originally invoked (relative path, PATH lookup, etc.).
@@ -265,10 +268,9 @@ pick_local_model_compose() {
   # dedicated per-model services are gone (see docker-compose.yml's
   # local-ollama-defaults removal comment), and no project-local static
   # list anymore either as of the batch-4 migration.
-  if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
-    echo "Failed to fetch local model list: OPENCODE_GLOBAL_CONFIG not set (see REQUIREMENTS.md)." >&2
-    return 1
-  fi
+  # OPENCODE_GLOBAL_CONFIG is always set by this point --
+  # scripts/lib/opencode-global-config.sh, sourced near the top of this
+  # file, defaults it if not already exported.
   local candidates_json
   candidates_json="$(python3 -c "
 import json, os
