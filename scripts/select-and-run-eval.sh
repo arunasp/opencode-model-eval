@@ -55,7 +55,24 @@ if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
   echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
   exit 1
 fi
-LOCAL_MODELS="$(python3 scripts/tools/read_local_ollama_models.py)"
+
+# Discover live Ollama models and merge them with your global config
+# before reading, so a model you've `ollama pull`ed but haven't
+# declared in provider["local/ollama"]["models"] yet still shows up --
+# same additive discover_local_ollama_models.py mechanism the
+# container already runs at startup, just run here on the host first,
+# before the picker itself. Ollama unreachable degrades gracefully
+# (confirmed in discover_local_ollama_models.py: falls back to the
+# global config's own declared list unchanged, doesn't fail the picker).
+MERGED_LOCAL_CONFIG="$(mktemp)"
+trap 'rm -f "${MERGED_LOCAL_CONFIG}"' EXIT
+python3 scripts/discover_local_ollama_models.py \
+  --base-config "${OPENCODE_GLOBAL_CONFIG}" \
+  --ollama-tags-url "${OPENCODE_OLLAMA_TAGS_URL:-http://localhost:11434/api/tags}" \
+  --output "${MERGED_LOCAL_CONFIG}" \
+  --provider-key local/ollama \
+  --timeout 3
+LOCAL_MODELS="$(python3 scripts/tools/read_local_ollama_models.py --config "${MERGED_LOCAL_CONFIG}")"
 
 dry_run=false
 direct_name=""

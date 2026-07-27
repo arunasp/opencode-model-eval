@@ -75,8 +75,16 @@ def fetch_ollama_model_names(tags_url: str, timeout: float) -> list[str]:
 
 
 def merge_models(base_config: dict, provider_key: str, model_names: list[str]) -> dict:
-    """Return a new config dict with provider_key's "models" map replaced
-    by model_names (each mapped to {}, matching the existing schema).
+    """Return a new config dict with provider_key's "models" map merged
+    with model_names (each newly-discovered name mapped to {}) -- a
+    real union, not a replacement. A model declared in base_config but
+    not currently reported by Ollama survives (e.g. installed but not
+    loaded, or a transient discovery gap); anything Ollama reports gets
+    added. Confirmed this needs to be a real union here, not just
+    upstream where opencode's own config merge happens to compensate
+    for a full replacement: a host-side caller reading this function's
+    output file directly (rather than through opencode's own
+    loadGlobal()-then-overlay merge) has no such compensating layer.
 
     Does not mutate base_config in place -- callers should still have
     the original available for comparison/logging if needed.
@@ -87,8 +95,57 @@ def merge_models(base_config: dict, provider_key: str, model_names: list[str]) -
             f"provider {provider_key!r} not found in base config -- "
             "discovery has nothing to merge into"
         )
-    config["provider"][provider_key]["models"] = {name: {} for name in model_names}
+    existing_models = config["provider"][provider_key].get("models", {})
+    merged_models = dict(existing_models)
+    merged_models.update({name: {} for name in model_names})
+    config["provider"][provider_key]["models"] = merged_models
     return config
+
+
+def strip_jsonc_comments(text: str) -> str:
+    """Real string-aware state machine, not a regex -- a naive `//.*`
+    regex breaks on any string value containing "//", e.g. this same
+    kind of config's own "https://opencode.ai/config.json" $schema
+    field (hit that exact bug once already). Kept in sync with
+    scripts/tools/read_local_ollama_models.py's identical copy -- not
+    imported from there because this file is copied standalone into
+    the minimal `server` container stage (no pip, no scripts/tools/
+    alongside it there).
+    """
+    result = []
+    i, n = 0, len(text)
+    in_string = False
+    escape = False
+    while i < n:
+        c = text[i]
+        if in_string:
+            result.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+            result.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            i += 2
+            while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                i += 1
+            i += 2
+            continue
+        result.append(c)
+        i += 1
+    return "".join(result)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -100,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=3.0)
     args = parser.parse_args(argv)
 
-    base_config = json.loads(args.base_config.read_text())
+    base_config = json.loads(strip_jsonc_comments(args.base_config.read_text()))
 
     try:
         model_names = fetch_ollama_model_names(args.ollama_tags_url, args.timeout)

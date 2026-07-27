@@ -86,7 +86,7 @@ class DiscoverLocalOllamaModelsTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_successful_discovery_replaces_static_model_list(self):
+    def test_successful_discovery_merges_into_static_model_list(self):
         output_path = Path(self.tmpdir.name) / "out.json"
         rc = discover.main(
             [
@@ -101,6 +101,42 @@ class DiscoverLocalOllamaModelsTests(unittest.TestCase):
         result = json.loads(output_path.read_text())
         discovered = sorted(result["provider"]["local/ollama"]["models"].keys())
         self.assertEqual(discovered, sorted(FAKE_MODELS))
+
+    def test_declared_model_not_discovered_survives_the_merge(self):
+        # The real bug this guards: a model declared in the base config
+        # but not currently reported by Ollama's live /api/tags (not
+        # pulled yet on this run, or a transient discovery gap) must not
+        # silently vanish -- confirmed live this session with
+        # NitrAI/VibeThinker-3B:latest disappearing from a host-side
+        # picker because an earlier version of merge_models() did a full
+        # replacement instead of a union.
+        base_config_path = Path(self.tmpdir.name) / "base_with_extra.json"
+        base_config_path.write_text(
+            json.dumps({
+                "provider": {
+                    "local/ollama": {
+                        "models": {
+                            "gemma4:31b": {},
+                            "declared-but-not-installed:latest": {},
+                        }
+                    }
+                }
+            })
+        )
+        output_path = Path(self.tmpdir.name) / "out.json"
+        rc = discover.main(
+            [
+                "--base-config", str(base_config_path),
+                "--ollama-tags-url", f"http://127.0.0.1:{self.port}/api/tags",
+                "--output", str(output_path),
+                "--provider-key", "local/ollama",
+                "--timeout", "3",
+            ]
+        )
+        self.assertEqual(rc, 0)
+        result = json.loads(output_path.read_text())
+        discovered = set(result["provider"]["local/ollama"]["models"].keys())
+        self.assertEqual(discovered, set(FAKE_MODELS) | {"declared-but-not-installed:latest"})
 
     def test_unreachable_ollama_falls_back_to_static_list_unchanged(self):
         output_path = Path(self.tmpdir.name) / "out.json"
