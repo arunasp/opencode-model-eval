@@ -16,6 +16,13 @@
 # and Docker Compose are fully supported paths in this repo, kept in
 # parallel on purpose -- see README's "Two deployment paths" section):
 #   - Deploy harness  -> `make tf-apply` or `docker-compose up -d server`
+#                        (checks OPENCODE_SERVE_PORT for an already-
+#                        reachable server first -- asks reuse-or-
+#                        redeploy interactively, or set FORCE_REDEPLOY=1
+#                        to skip that prompt and always redeploy, same
+#                        opt-in convention as AUTO_APPROVE for
+#                        terraform's own confirmation -- for batch/
+#                        scripted execution with no TTY available)
 #   - Remove harness  -> `make tf-destroy` or `docker-compose down`
 #   - Run an eval     -> provider/model (and, on the Compose side,
 #                        local-vs-cloud) picking happens RIGHT HERE,
@@ -128,6 +135,35 @@ pick_backend() {
   host_arrow_menu "Which backend?" "Terraform" "Docker Compose"
 }
 
+# Returns the backend name currently holding OPENCODE_SERVE_PORT (or
+# empty if nothing's reachable there) -- same health-check style
+# docker-compose.yml's own healthcheck already uses (python3, already
+# a hard dependency, rather than adding curl just for this). Backends
+# are distinguished by their confirmed, different container naming:
+# Terraform's server has a fixed name (terraform/main.tf's
+# docker_container.server: name = "opencode-model-eval-server", no
+# index suffix); Compose (confirmed v1.29.2, the legacy CLI) names
+# containers "<project>_<service>_<index>" with underscores --
+# unambiguous against Terraform's hyphenated name.
+existing_server_backend() {
+  local port="${OPENCODE_SERVE_PORT:-49604}"
+  python3 -c "
+import sys, urllib.request
+try:
+    urllib.request.urlopen('http://localhost:${port}/session', timeout=2)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null || return 1
+
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "opencode-model-eval-server"; then
+    echo "Terraform"
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^opencode-model-eval_server_"; then
+    echo "Docker Compose"
+  else
+    echo "unknown backend"
+  fi
+}
+
 # run_in_output_pane <bash-command-string>
 # Sends a command to the output pane via tmux send-keys, then blocks
 # on `tmux wait-for` (a real synchronization primitive tmux provides
@@ -183,8 +219,46 @@ run_logged() {
 }
 
 deploy() {
-  local backend
-  backend="$(pick_backend)" || return 1
+  local existing
+  existing="$(existing_server_backend)" || existing=""
+  local backend=""
+  if [ -n "${existing}" ]; then
+    local choice
+    if [ -n "${FORCE_REDEPLOY:-}" ]; then
+      # Batch/scripted execution has no TTY for host_arrow_menu to read
+      # from -- FORCE_REDEPLOY=1 (same opt-in convention as
+      # AUTO_APPROVE for terraform's own confirmation) skips the prompt
+      # and always redeploys, never silently reuses.
+      choice="Redeploy (tear down first)"
+      echo "FORCE_REDEPLOY=1 set -- redeploying without prompting (existing: ${existing})"
+    else
+      choice="$(host_arrow_menu \
+        "A server is already reachable at localhost:${OPENCODE_SERVE_PORT:-49604} (${existing}). Reuse it, or redeploy?" \
+        "Reuse existing" "Redeploy (tear down first)")" || return 1
+    fi
+    if [ "${choice}" = "Reuse existing" ]; then
+      echo "Reusing the existing ${existing} deployment -- nothing to do."
+      return 0
+    fi
+    # Redeploy: tear down whichever backend actually holds the port
+    # first (it may differ from whatever gets deployed below in the
+    # normal interactive path -- lets you switch backends there).
+    case "${existing}" in
+      Terraform) run_logged "remove-terraform-before-redeploy" make tf-destroy ;;
+      "Docker Compose") run_logged "remove-compose-before-redeploy" docker-compose down ;;
+      *) echo "Can't identify the backend holding the port -- stop it manually, then retry." >&2; return 1 ;;
+    esac
+    if [ -n "${FORCE_REDEPLOY:-}" ]; then
+      # Force mode redeploys the SAME backend just torn down -- no
+      # second interactive prompt via pick_backend() either, so this
+      # is genuinely usable end-to-end from a script/batch context.
+      backend="${existing}"
+    fi
+  fi
+
+  if [ -z "${backend}" ]; then
+    backend="$(pick_backend)" || return 1
+  fi
   case "$backend" in
     Terraform) run_logged "deploy-terraform" make tf-apply ;;
     "Docker Compose") run_logged "deploy-compose" docker-compose up -d server ;;
