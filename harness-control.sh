@@ -135,34 +135,8 @@ pick_backend() {
   host_arrow_menu "Which backend?" "Terraform" "Docker Compose"
 }
 
-# Returns the backend name currently holding OPENCODE_SERVE_PORT (or
-# empty if nothing's reachable there) -- same health-check style
-# docker-compose.yml's own healthcheck already uses (python3, already
-# a hard dependency, rather than adding curl just for this). Backends
-# are distinguished by their confirmed, different container naming:
-# Terraform's server has a fixed name (terraform/main.tf's
-# docker_container.server: name = "opencode-model-eval-server", no
-# index suffix); Compose (confirmed v1.29.2, the legacy CLI) names
-# containers "<project>_<service>_<index>" with underscores --
-# unambiguous against Terraform's hyphenated name.
-existing_server_backend() {
-  local port="${OPENCODE_SERVE_PORT:-49604}"
-  python3 -c "
-import sys, urllib.request
-try:
-    urllib.request.urlopen('http://localhost:${port}/session', timeout=2)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null || return 1
-
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "opencode-model-eval-server"; then
-    echo "Terraform"
-  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^opencode-model-eval_server_"; then
-    echo "Docker Compose"
-  else
-    echo "unknown backend"
-  fi
-}
+# shellcheck source=/dev/null
+source scripts/lib/server-lifecycle.sh
 
 # run_in_output_pane <bash-command-string>
 # Sends a command to the output pane via tmux send-keys, then blocks

@@ -98,10 +98,49 @@ while IFS= read -r model; do
   kinds+=("local")
 done <<< "$LOCAL_MODELS"
 
+# shellcheck source=/dev/null
+source scripts/lib/server-lifecycle.sh
+
+# `docker-compose run --rm eval` implicitly starts `server` via
+# Compose's own depends_on -- if something else (confirmed: Terraform's
+# server container, same default port) already holds
+# OPENCODE_SERVE_PORT, that implicit start hits the exact same
+# "port is already allocated" bind failure harness-control.sh's
+# deploy() now catches, but this script never went through deploy()
+# at all -- confirmed live, a real gap this closes.
+ensure_no_conflicting_server() {
+  local existing
+  existing="$(existing_server_backend)" || return 0  # nothing up -- depends_on will start it cleanly
+  if [ "${existing}" = "Docker Compose" ]; then
+    return 0  # already Compose's own server -- depends_on will just reuse it
+  fi
+  # Something else holds the port -- would collide.
+  if [ -n "${FORCE_REDEPLOY:-}" ]; then
+    echo "FORCE_REDEPLOY=1 set -- tearing down existing ${existing} deployment on this port first"
+  elif [ -t 0 ]; then
+    local choice
+    choice="$(host_arrow_menu \
+      "A server is already reachable on this port (${existing}), which conflicts with Compose's own server. Tear it down and continue?" \
+      "Tear down and continue" "Abort")" || return 1
+    [ "${choice}" = "Abort" ] && { echo "Aborted -- resolve the port conflict manually, or set FORCE_REDEPLOY=1." >&2; return 1; }
+  else
+    echo "error: port conflict with an existing ${existing} deployment, and no TTY to ask -- set FORCE_REDEPLOY=1 to tear it down automatically, or resolve manually." >&2
+    return 1
+  fi
+  case "${existing}" in
+    Terraform) make tf-destroy ;;
+    *) echo "Can't automatically tear down an unidentified backend -- resolve manually." >&2; return 1 ;;
+  esac
+}
+
 run_selected() {
   local idx="$1"
   local name="${names[$idx]}"
   local kind="${kinds[$idx]}"
+
+  if [ "$dry_run" = false ]; then
+    ensure_no_conflicting_server || exit 1
+  fi
 
   if [ "$kind" = "cloud" ]; then
     if [ -t 0 ]; then
