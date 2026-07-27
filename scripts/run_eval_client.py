@@ -60,6 +60,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -579,6 +580,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         session_id = None
         try:
             session_id = create_session(base_url)
+            _CURRENT_RUN_STATE["session_id"] = session_id
             print(_elapsed_marker("session"), end="", file=sys.stderr, flush=True)
             setup_resp, quota_info, setup_events = quota_aware_send_message(
                 base_url, session_id, provider, model_id, setup_message)
@@ -607,6 +609,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                 abort_session(base_url, session_id)
             except RuntimeError:
                 pass  # best-effort -- we already have the data we need
+            _CURRENT_RUN_STATE["session_id"] = None
         except _QuotaExhausted as e:
             # Distinct from a generic RuntimeError below on purpose:
             # this means opencode's OWN retry loop (session/retry.ts,
@@ -656,6 +659,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                     abort_session(base_url, session_id)
                 except RuntimeError:
                     pass
+                _CURRENT_RUN_STATE["session_id"] = None
             tier_results.append({
                 "tier": tier_num, "source": tier_def["source"], "passed": False,
                 "needs_manual_review": False, "reason": f"HTTP/request error: {e}",
@@ -799,6 +803,7 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     session_id = None
     try:
         session_id = create_session(base_url)
+        _CURRENT_RUN_STATE["session_id"] = session_id
         send_message(base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
         print("[eval-client] warm-up complete", file=sys.stderr)
     except RuntimeError as e:
@@ -814,6 +819,7 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
                 abort_session(base_url, session_id)
             except RuntimeError:
                 pass  # best-effort -- warm-up is already done/failed regardless
+            _CURRENT_RUN_STATE["session_id"] = None
 
 
 def unload_local_model(ollama_base_url: str, model_id: str,
@@ -862,6 +868,72 @@ def unload_local_model(ollama_base_url: str, model_id: str,
           file=sys.stderr)
 
 
+# Confirmed live: hitting Ctrl-C during a run raises KeyboardInterrupt
+# straight through main()'s call stack with nothing caught anywhere --
+# unload_local_model() (only ever called at the very end of a normal
+# run) never runs, and whatever tier's session was in flight is never
+# aborted either. Real log evidence: `ollama ps` showed the model
+# still resident with a live 5min keep_alive countdown well after the
+# interrupt. This module-level dict + signal handler close that gap --
+# updated as the run progresses (main() sets base_url/provider/model_id
+# once; run_category() updates session_id per tier) so the handler has
+# something to clean up regardless of exactly where execution was when
+# the signal arrived.
+_CURRENT_RUN_STATE = {
+    "base_url": None,
+    "session_id": None,
+    "provider": None,
+    "model_id": None,
+}
+
+_INTERRUPT_HANDLING = False  # re-entrancy guard -- a second signal while cleaning up shouldn't restart the cleanup
+
+
+def _handle_interrupt(signum: int, frame) -> None:
+    global _INTERRUPT_HANDLING
+    if _INTERRUPT_HANDLING:
+        # Second interrupt during cleanup -- stop trying, just exit.
+        sys.exit(130)
+    _INTERRUPT_HANDLING = True
+
+    sig_name = signal.Signals(signum).name
+    print(f"\n[eval-client] {sig_name} received -- best-effort cleanup before exiting "
+          f"(session abort + local model unload if applicable, both short-timeout so this "
+          f"doesn't hang)...", file=sys.stderr)
+
+    base_url = _CURRENT_RUN_STATE["base_url"]
+    session_id = _CURRENT_RUN_STATE["session_id"]
+    if base_url and session_id:
+        try:
+            abort_session(base_url, session_id)
+            print(f"[eval-client] aborted in-flight session {session_id}", file=sys.stderr)
+        except Exception as e:
+            print(f"[eval-client] session abort on interrupt failed (non-fatal): {e}", file=sys.stderr)
+
+    provider = _CURRENT_RUN_STATE["provider"]
+    model_id = _CURRENT_RUN_STATE["model_id"]
+    if provider == "local/ollama" and model_id:
+        try:
+            # Short timeout here on purpose -- unload_local_model()'s
+            # normal call (end of a successful run) blocks up to
+            # OLLAMA_UNLOAD_TIMEOUT_S (300s default) polling for
+            # confirmation, which is fine when the run's already done
+            # but wrong here: someone who just hit Ctrl-C wants the
+            # process to actually exit promptly, not wait another 5
+            # minutes. Fires the keep_alive:0 request and gives up
+            # waiting for confirmation quickly -- Ollama's own
+            # keep_alive will still expire it soon regardless.
+            unload_local_model(OLLAMA_BASE_URL, model_id, timeout_s=5)
+        except Exception as e:
+            print(f"[eval-client] model unload on interrupt failed (non-fatal): {e}", file=sys.stderr)
+
+    sys.exit(130)  # 128 + SIGINT(2), the conventional exit code for this -- matches what was already observed
+
+
+signal.signal(signal.SIGINT, _handle_interrupt)
+signal.signal(signal.SIGTERM, _handle_interrupt)
+
+
 def main() -> int:
     base_url = os.environ.get("OPENCODE_SERVER_URL", "http://server:4096")
     # 4096 is THIS project's chosen fixed port, set explicitly when
@@ -876,6 +948,10 @@ def main() -> int:
     if not provider or not model_id:
         print("FATAL: OPENCODE_MODEL_PROVIDER and OPENCODE_MODEL_ID must be set", file=sys.stderr)
         return 1
+
+    _CURRENT_RUN_STATE["base_url"] = base_url
+    _CURRENT_RUN_STATE["provider"] = provider
+    _CURRENT_RUN_STATE["model_id"] = model_id
 
     ladder_path = TASK_SUITE_DIR / "test_ladder.json"
     if not ladder_path.exists():
@@ -892,14 +968,20 @@ def main() -> int:
     # live (real uploaded results dump) that a rerun against the same
     # model silently overwrote the prior report.json/category files in
     # place, with the only history preserved being a manual "-old"
-    # rename the user did themselves. Only rotates if a previous run
-    # actually completed (report.json present) -- an empty/never-used
-    # directory (e.g. from mkdir with no run) isn't worth preserving.
+    # rename the user did themselves. Triggers on ANY prior content in
+    # results_dir, not just a complete run's report.json -- confirmed
+    # live a second time: an INTERRUPTED run (Ctrl-C mid-category,
+    # caught by the new SIGINT handler but still genuinely incomplete)
+    # never reaches the report.json write at all, so the old
+    # report.json-only check silently overwrote that partial run's
+    # category/tier files on the next attempt against the same model,
+    # with no rotation. any(results_dir.iterdir()) is true for a
+    # directory holding even one category folder, complete run or not.
     # Timestamp suffix, not a single "-old", so multiple past runs
     # accumulate rather than only ever keeping one generation back --
     # mirrors results/logs/'s own YYYYMMDD-HHMMSS naming rather than
     # inventing a different convention.
-    if (results_dir / "report.json").exists():
+    if results_dir.exists() and any(results_dir.iterdir()):
         rotated_dir = results_dir.parent / f"{model_slug}.{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
         print(f"[eval-client] previous results at {results_dir} found -- rotating to {rotated_dir}",
               file=sys.stderr)

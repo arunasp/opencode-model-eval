@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/server-lifecycle.sh -- shared server-detection primitive.
 # Sourced by harness-control.sh, select-and-run-eval.sh, and
 # tf-select-and-run-eval.sh; not meant to be run standalone (no

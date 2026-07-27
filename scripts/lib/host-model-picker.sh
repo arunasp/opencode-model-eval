@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/host-model-picker.sh -- arrow-key (or j/k) menu run
 # entirely on the host, never inside Docker. Sourced by
 # select-and-run-eval.sh and tf-select-and-run-eval.sh; not meant to

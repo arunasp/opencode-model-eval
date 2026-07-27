@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # scripts/lib/opencode-global-config.sh -- defaults OPENCODE_GLOBAL_CONFIG
 # to the standard location if not already set. Sourced by
 # harness-control.sh, select-and-run-eval.sh, and
