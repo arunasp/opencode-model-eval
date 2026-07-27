@@ -233,11 +233,16 @@ throttled right now. `Q` tiers also carry `quota_wait_seconds` (how
 much longer opencode's own next attempt would have needed) and
 `status_events` (every status transition observed while waiting).
 
-**Console output while a run is in progress:** each tier prints one
-flushed dot per HTTP round-trip (session create, setup message, probe
-message) as it happens, not just once the whole tier finishes — a
-single slow LLM response previously looked identical to a hung
-process from the CLI's perspective. A run that's gone silent for
-several minutes with the log file also showing no new lines is the
-actual signal something's stuck; dots not advancing within a single
-tier for a long time is expected for a slow model, not a bug.
+**Console output while a run is in progress:** each tier prints a
+flushed, timestamped marker per HTTP round-trip (`[session:+0.3s]`,
+`[setup:+12.1s]`, `[probe:+45.6s]` -- elapsed seconds since the tier
+itself started, not wall-clock) as it happens, not just once the whole
+tier finishes — a single slow LLM response previously looked identical
+to a hung process from the CLI's perspective, and the timing itself
+wasn't visible between request → result → next step. A run that's gone
+silent for several minutes with the log file also showing no new lines
+is the actual signal something's stuck; markers not advancing within a
+single tier for a long time is expected for a slow model, not a bug --
+compare the elapsed second count across tiers to actually see whether
+a given step is unusually slow, instead of only knowing something
+eventually completed.

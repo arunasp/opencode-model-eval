@@ -407,7 +407,31 @@ def extract_reply(response: dict) -> tuple[str, list[dict]]:
     confirmed empirically against a real opencode serve instance -- see
     module docstring. The message.parts fallback and the tool-call
     branch remain defensive/inferred, not exercised by that same test.
+
+    Raises RuntimeError if info.finish == "error" -- confirmed live:
+    a real ContextOverflowError response (VibeThinker-3B's context
+    window too small even after opencode's own auto-compaction) came
+    back with parts: [] and no exception from send_message() itself
+    (the HTTP call succeeded; the model/compaction step inside it
+    failed). Silently returning empty text here previously let this
+    flow straight through to check_pass()/scan_transcript() against an
+    empty transcript, which found zero CVV violations by definition
+    and scored the tier a clean PASS -- an opencode-level error being
+    reported as if the model had answered cleanly. Raising here instead
+    routes it into run_category()'s existing RuntimeError handler,
+    which already marks a tier "E" (error, not a capability failure)
+    for exactly this kind of "we got a response but can't score it"
+    case -- reusing established semantics, not inventing new ones.
     """
+    info = response.get("info", {})
+    if isinstance(info, dict) and info.get("finish") == "error":
+        error = info.get("error", {})
+        name = error.get("name", "unknown error") if isinstance(error, dict) else "unknown error"
+        message = (
+            error.get("data", {}).get("message", "") if isinstance(error, dict) else ""
+        )
+        raise RuntimeError(f"opencode returned an error response: {name}: {message}")
+
     parts = response.get("parts")
     if parts is None and isinstance(response.get("message"), dict):
         parts = response["message"].get("parts")
@@ -541,25 +565,32 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         # Progress within a single tier, not just between tiers: a
         # single slow LLM response previously looked identical to a
         # hung process from the CLI's perspective (nothing printed
-        # until the whole tier finished). One flushed dot per HTTP
+        # until the whole tier finished). A flushed, timestamped marker
+        # per HTTP
         # round-trip instead -- visible movement during exactly the
         # kind of multi-minute single-request wait that prompted this.
         print(f"  [tier {tier_num}] source={tier_def['source']} ", end="", file=sys.stderr, flush=True)
 
+        tier_t0 = time.monotonic()
+
+        def _elapsed_marker(label: str) -> str:
+            return f"[{label}:+{time.monotonic() - tier_t0:.1f}s]"
+
+        session_id = None
         try:
             session_id = create_session(base_url)
-            print(".", end="", file=sys.stderr, flush=True)
+            print(_elapsed_marker("session"), end="", file=sys.stderr, flush=True)
             setup_resp, quota_info, setup_events = quota_aware_send_message(
                 base_url, session_id, provider, model_id, setup_message)
             if quota_info is not None:
                 raise _QuotaExhausted(quota_info, setup_events)
-            print(".", end="", file=sys.stderr, flush=True)
+            print(_elapsed_marker("setup"), end="", file=sys.stderr, flush=True)
             setup_text, setup_tools = extract_reply(setup_resp)
             probe_resp, quota_info, probe_events = quota_aware_send_message(
                 base_url, session_id, provider, model_id, tier_def["prompt"])
             if quota_info is not None:
                 raise _QuotaExhausted(quota_info, setup_events + probe_events)
-            print(".", end="", file=sys.stderr, flush=True)
+            print(_elapsed_marker("probe"), end="", file=sys.stderr, flush=True)
             probe_text, probe_tools = extract_reply(probe_resp)
             # Both round-trips succeeded -- close this tier's session now,
             # regardless of what check_pass() below judges it as. This was
@@ -612,6 +643,19 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
             # the overall run continue to the next category instead.
             print(f" -> ERROR: {e}", file=sys.stderr)
             summary_dots.append("E")
+            # Confirmed gap this closes: unlike the happy-path (aborts
+            # after every tier) and the quota-bailout path (aborts
+            # inside quota_aware_send_message itself), a RuntimeError
+            # raised directly in THIS try block -- e.g. extract_reply()'s
+            # new finish=="error" check -- previously left the session
+            # open with no abort call anywhere on this path. Best-effort,
+            # same pattern as the happy-path abort: we already have
+            # whatever data we're going to get.
+            if session_id is not None:
+                try:
+                    abort_session(base_url, session_id)
+                except RuntimeError:
+                    pass
             tier_results.append({
                 "tier": tier_num, "source": tier_def["source"], "passed": False,
                 "needs_manual_review": False, "reason": f"HTTP/request error: {e}",
