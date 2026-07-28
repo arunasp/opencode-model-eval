@@ -555,7 +555,9 @@ def filter_log_by_identifiers(log_text: str, identifiers: set) -> str:
 def run_category(category: dict, base_url: str, provider: str, model_id: str,
                   setup_message: str, category_dir: Path) -> dict:
     cat_id = category["id"]
-    print(f"[eval-client] category: {cat_id}: {category['description']}", file=sys.stderr)
+    cat_start_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"[eval-client] category: {cat_id}: {category['description']} (started {cat_start_utc})",
+          file=sys.stderr)
     category_dir.mkdir(parents=True, exist_ok=True)
     ceiling = 0
     tier_results = []
@@ -623,7 +625,9 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
             # again later" (Q) -- conflating any of these into the
             # same symbol would make the report actively misleading.
             wait_min = e.quota_info["wait_seconds"] / 60
-            print(f" -> QUOTA: {e.quota_info['reason']} (next attempt in ~{wait_min:.0f}min, gave up waiting) {e.quota_info['message']}",
+            print(f" -> QUOTA ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): "
+                  f"{e.quota_info['reason']} (next attempt in ~{wait_min:.0f}min, gave up waiting) "
+                  f"{e.quota_info['message']}",
                   file=sys.stderr)
             summary_dots.append("Q")
             tier_results.append({
@@ -644,7 +648,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
             # established by earlier tiers/categories. Report cleanly,
             # stop this category (same as a normal FAIL would), let
             # the overall run continue to the next category instead.
-            print(f" -> ERROR: {e}", file=sys.stderr)
+            print(f" -> ERROR ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {e}", file=sys.stderr)
             summary_dots.append("E")
             # Confirmed gap this closes: unlike the happy-path (aborts
             # after every tier) and the quota-bailout path (aborts
@@ -700,7 +704,9 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         else:
             break
 
-    print(f"  progress: {''.join(summary_dots)} (ceiling: tier {ceiling})", file=sys.stderr)
+    cat_end_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    print(f"  progress: {''.join(summary_dots)} (ceiling: tier {ceiling}, finished {cat_end_utc})",
+          file=sys.stderr)
     return {"category": cat_id, "ceiling": ceiling, "tiers": tier_results, "progress_dots": "".join(summary_dots)}
 
 
@@ -884,6 +890,7 @@ _CURRENT_RUN_STATE = {
     "session_id": None,
     "provider": None,
     "model_id": None,
+    "results_dir": None,
 }
 
 _INTERRUPT_HANDLING = False  # re-entrancy guard -- a second signal while cleaning up shouldn't restart the cleanup
@@ -926,6 +933,36 @@ def _handle_interrupt(signum: int, frame) -> None:
             unload_local_model(OLLAMA_BASE_URL, model_id, timeout_s=5)
         except Exception as e:
             print(f"[eval-client] model unload on interrupt failed (non-fatal): {e}", file=sys.stderr)
+
+    # Confirmed live: an interrupted run previously left ZERO diagnostic
+    # artifacts behind -- results/logs/ is only ever written by
+    # harness-control.sh's own run_logged() wrapper (out of scope for a
+    # direct script invocation like this), and results/<model>/server.log
+    # is only ever captured at the very end of a NORMAL run, well after
+    # this interrupt path already returned. Best-effort raw copy here,
+    # deliberately UNFILTERED (unlike the normal end-of-run capture,
+    # which filters by this run's own session IDs/error refs) -- we
+    # don't reliably have a full set of identifiers to filter by mid-
+    # interrupt, and an unfiltered dump for the rare interrupted case is
+    # far more useful than the alternative of capturing nothing at all.
+    # Separate filename from the normal "server.log" so it's obvious at
+    # a glance which capture mode produced a given file.
+    results_dir = _CURRENT_RUN_STATE["results_dir"]
+    if results_dir is not None:
+        try:
+            if OPENCODE_LOG_PATH.exists():
+                results_dir.mkdir(parents=True, exist_ok=True)
+                (results_dir / "server.log.interrupted").write_text(
+                    OPENCODE_LOG_PATH.read_text(errors="replace")
+                )
+                print(f"[eval-client] captured (unfiltered) server log to "
+                      f"{results_dir / 'server.log.interrupted'}", file=sys.stderr)
+            else:
+                print(f"[eval-client] NOTE: {OPENCODE_LOG_PATH} not found -- "
+                      "no server log to capture on interrupt", file=sys.stderr)
+        except OSError as e:
+            print(f"[eval-client] server log capture on interrupt failed (non-fatal): {e}",
+                  file=sys.stderr)
 
     sys.exit(130)  # 128 + SIGINT(2), the conventional exit code for this -- matches what was already observed
 
@@ -988,6 +1025,7 @@ def main() -> int:
         shutil.move(str(results_dir), str(rotated_dir))
 
     results_dir.mkdir(parents=True, exist_ok=True)
+    _CURRENT_RUN_STATE["results_dir"] = results_dir
 
     print(f"[eval-client] target server: {base_url}", file=sys.stderr)
     print(f"[eval-client] model under test: {provider}/{model_id}", file=sys.stderr)
