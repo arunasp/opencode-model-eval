@@ -99,6 +99,15 @@ OPENCODE_LOG_PATH = Path("/home/harness/.local/share/opencode/log/opencode.log")
 # conflate the two if this surfaces again.
 QUOTA_WAIT_THRESHOLD_S = float(os.environ.get("OPENCODE_QUOTA_WAIT_THRESHOLD_S", "3000"))  # 50 min default
 STATUS_POLL_INTERVAL_S = float(os.environ.get("OPENCODE_STATUS_POLL_INTERVAL_S", "5"))
+# Direct request: a genuine client-side socket timeout ("timed out
+# after Ns waiting for a response") previously went straight to "E"
+# with zero retry -- distinct from quota exhaustion (already has its
+# own bounded-wait/give-up logic) and from a deterministic failure
+# like ContextOverflowError (retrying that would just fail identically,
+# wasting another full timeout window). 1 retry by default -- a second
+# genuine timeout in a row is much more likely a real, persistent
+# problem than a transient blip worth a third attempt.
+TIER_TIMEOUT_RETRY_LIMIT = int(os.environ.get("OPENCODE_TIER_TIMEOUT_RETRY_LIMIT", "1"))
 # Heartbeat cadence for stdout progress during a long-running tier --
 # deliberately separate from STATUS_POLL_INTERVAL_S (which stays fast,
 # 5s, for responsive quota-threshold detection). Printing on every 5s
@@ -581,97 +590,124 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         def _elapsed_marker(label: str) -> str:
             return f"[{label}:+{time.monotonic() - tier_t0:.1f}s]"
 
-        session_id = None
-        try:
-            session_id = create_session(base_url)
-            _CURRENT_RUN_STATE["session_id"] = session_id
-            print(_elapsed_marker("session"), end="", file=sys.stderr, flush=True)
-            setup_resp, quota_info, setup_events = quota_aware_send_message(
-                base_url, session_id, provider, model_id, setup_message)
-            if quota_info is not None:
-                raise _QuotaExhausted(quota_info, setup_events)
-            print(_elapsed_marker("setup"), end="", file=sys.stderr, flush=True)
-            setup_text, setup_tools = extract_reply(setup_resp)
-            probe_resp, quota_info, probe_events = quota_aware_send_message(
-                base_url, session_id, provider, model_id, tier_def["prompt"])
-            if quota_info is not None:
-                raise _QuotaExhausted(quota_info, setup_events + probe_events)
-            print(_elapsed_marker("probe"), end="", file=sys.stderr, flush=True)
-            probe_text, probe_tools = extract_reply(probe_resp)
-            # Both round-trips succeeded -- close this tier's session now,
-            # regardless of what check_pass() below judges it as. This was
-            # the missing case: quota_aware_send_message() already aborts
-            # on a quota-bailout (its own "retry" threshold branch) and on
-            # any raw exception from send_message() itself, but a tier that
-            # completes normally -- the common case for every PASS and
-            # every judged FAIL -- fell through both of those and was never
-            # aborted at all, leaving opencode holding the session (and,
-            # for local/ollama, the model) open indefinitely. Confirmed
-            # live: this is what kept Ollama persistently resident even
-            # after the eval-client process producing the load was gone.
+        # Direct request: a genuine client-side socket timeout (the
+        # exact "timed out after Ns waiting for a response" message --
+        # confirmed this means http_post()'s own read timeout fired
+        # with truly no bytes back, not a parsing bug: a parse failure
+        # would show a JSONDecodeError instead, with real bytes having
+        # arrived) previously went straight to "E" with no retry at
+        # all. quota_aware_send_message()'s own docstring already
+        # explains why this class of retry doesn't duplicate opencode's
+        # internal one: that's for provider-side rate-limiting
+        # (session/retry.ts), which can't help with a raw socket
+        # timeout on OUR OWN connection to opencode itself -- a
+        # genuinely different failure this project's own client needs
+        # to handle. Deliberately NOT a blanket retry-everything: a
+        # deterministic failure like ContextOverflowError would just
+        # fail identically on retry, wasting another full timeout
+        # window for nothing -- only retried when the message
+        # specifically indicates a timeout.
+        timeout_retries_left = TIER_TIMEOUT_RETRY_LIMIT
+        stop_category = False
+        while True:
+            session_id = None
             try:
-                abort_session(base_url, session_id)
-            except RuntimeError:
-                pass  # best-effort -- we already have the data we need
-            _CURRENT_RUN_STATE["session_id"] = None
-        except _QuotaExhausted as e:
-            # Distinct from a generic RuntimeError below on purpose:
-            # this means opencode's OWN retry loop (session/retry.ts,
-            # confirmed unbounded) was still legitimately working when
-            # we gave up waiting -- nothing is wrong with the model or
-            # this harness, the provider is just rate-limited/quota-
-            # exhausted right now. A human reviewing results later
-            # needs to be able to tell "the model failed the test"
-            # (F) apart from "we never got a real answer to judge"
-            # (E) apart from "this is just externally throttled, try
-            # again later" (Q) -- conflating any of these into the
-            # same symbol would make the report actively misleading.
-            wait_min = e.quota_info["wait_seconds"] / 60
-            print(f" -> QUOTA ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): "
-                  f"{e.quota_info['reason']} (next attempt in ~{wait_min:.0f}min, gave up waiting) "
-                  f"{e.quota_info['message']}",
-                  file=sys.stderr)
-            summary_dots.append("Q")
-            tier_results.append({
-                "tier": tier_num, "source": tier_def["source"], "passed": False,
-                "needs_manual_review": False,
-                "reason": f"quota/rate-limit exhausted: {e.quota_info['reason']} -- {e.quota_info['message']}",
-                "findings": {}, "session_id": session_id,
-                "quota_wait_seconds": e.quota_info["wait_seconds"],
-                "status_events": e.events,
-                "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            })
-            break
-        except RuntimeError as e:
-            # Previously uncaught here -- one tier's HTTP/model error
-            # (e.g. ProviderModelNotFoundError surfaced as an HTTP 500)
-            # took down the entire eval run with a raw Python
-            # traceback, losing whatever ceiling had already been
-            # established by earlier tiers/categories. Report cleanly,
-            # stop this category (same as a normal FAIL would), let
-            # the overall run continue to the next category instead.
-            print(f" -> ERROR ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {e}", file=sys.stderr)
-            summary_dots.append("E")
-            # Confirmed gap this closes: unlike the happy-path (aborts
-            # after every tier) and the quota-bailout path (aborts
-            # inside quota_aware_send_message itself), a RuntimeError
-            # raised directly in THIS try block -- e.g. extract_reply()'s
-            # new finish=="error" check -- previously left the session
-            # open with no abort call anywhere on this path. Best-effort,
-            # same pattern as the happy-path abort: we already have
-            # whatever data we're going to get.
-            if session_id is not None:
+                session_id = create_session(base_url)
+                _CURRENT_RUN_STATE["session_id"] = session_id
+                print(_elapsed_marker("session"), end="", file=sys.stderr, flush=True)
+                setup_resp, quota_info, setup_events = quota_aware_send_message(
+                    base_url, session_id, provider, model_id, setup_message)
+                if quota_info is not None:
+                    raise _QuotaExhausted(quota_info, setup_events)
+                print(_elapsed_marker("setup"), end="", file=sys.stderr, flush=True)
+                setup_text, setup_tools = extract_reply(setup_resp)
+                probe_resp, quota_info, probe_events = quota_aware_send_message(
+                    base_url, session_id, provider, model_id, tier_def["prompt"])
+                if quota_info is not None:
+                    raise _QuotaExhausted(quota_info, setup_events + probe_events)
+                print(_elapsed_marker("probe"), end="", file=sys.stderr, flush=True)
+                probe_text, probe_tools = extract_reply(probe_resp)
+                # Both round-trips succeeded -- close this tier's session now,
+                # regardless of what check_pass() below judges it as. This was
+                # the missing case: quota_aware_send_message() already aborts
+                # on a quota-bailout (its own "retry" threshold branch) and on
+                # any raw exception from send_message() itself, but a tier that
+                # completes normally -- the common case for every PASS and
+                # every judged FAIL -- fell through both of those and was never
+                # aborted at all, leaving opencode holding the session (and,
+                # for local/ollama, the model) open indefinitely. Confirmed
+                # live: this is what kept Ollama persistently resident even
+                # after the eval-client process producing the load was gone.
                 try:
                     abort_session(base_url, session_id)
                 except RuntimeError:
-                    pass
+                    pass  # best-effort -- we already have the data we need
                 _CURRENT_RUN_STATE["session_id"] = None
-            tier_results.append({
-                "tier": tier_num, "source": tier_def["source"], "passed": False,
-                "needs_manual_review": False, "reason": f"HTTP/request error: {e}",
-                "findings": {}, "session_id": None,
-                "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            })
+                break  # success -- fall through to scoring below
+            except _QuotaExhausted as e:
+                # Distinct from a generic RuntimeError below on purpose:
+                # this means opencode's OWN retry loop (session/retry.ts,
+                # confirmed unbounded) was still legitimately working when
+                # we gave up waiting -- nothing is wrong with the model or
+                # this harness, the provider is just rate-limited/quota-
+                # exhausted right now. A human reviewing results later
+                # needs to be able to tell "the model failed the test"
+                # (F) apart from "we never got a real answer to judge"
+                # (E) apart from "this is just externally throttled, try
+                # again later" (Q) -- conflating any of these into the
+                # same symbol would make the report actively misleading.
+                wait_min = e.quota_info["wait_seconds"] / 60
+                print(f" -> QUOTA ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): "
+                      f"{e.quota_info['reason']} (next attempt in ~{wait_min:.0f}min, gave up waiting) "
+                      f"{e.quota_info['message']}",
+                      file=sys.stderr)
+                summary_dots.append("Q")
+                tier_results.append({
+                    "tier": tier_num, "source": tier_def["source"], "passed": False,
+                    "needs_manual_review": False,
+                    "reason": f"quota/rate-limit exhausted: {e.quota_info['reason']} -- {e.quota_info['message']}",
+                    "findings": {}, "session_id": session_id,
+                    "quota_wait_seconds": e.quota_info["wait_seconds"],
+                    "status_events": e.events,
+                    "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                stop_category = True
+                break
+            except RuntimeError as e:
+                is_timeout = "timed out after" in str(e)
+                if session_id is not None:
+                    try:
+                        abort_session(base_url, session_id)
+                    except RuntimeError:
+                        pass
+                    _CURRENT_RUN_STATE["session_id"] = None
+                if is_timeout and timeout_retries_left > 0:
+                    timeout_retries_left -= 1
+                    print(f" -> TIMEOUT ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {e} "
+                          f"-- retrying with a fresh session ({timeout_retries_left} retr"
+                          f"{'y' if timeout_retries_left == 1 else 'ies'} left)", file=sys.stderr)
+                    print(f"  [tier {tier_num}] retry ", end="", file=sys.stderr, flush=True)
+                    tier_t0 = time.monotonic()
+                    continue
+                # Previously uncaught here -- one tier's HTTP/model error
+                # (e.g. ProviderModelNotFoundError surfaced as an HTTP 500)
+                # took down the entire eval run with a raw Python
+                # traceback, losing whatever ceiling had already been
+                # established by earlier tiers/categories. Report cleanly,
+                # stop this category (same as a normal FAIL would), let
+                # the overall run continue to the next category instead.
+                print(f" -> ERROR ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {e}", file=sys.stderr)
+                summary_dots.append("E")
+                tier_results.append({
+                    "tier": tier_num, "source": tier_def["source"], "passed": False,
+                    "needs_manual_review": False, "reason": f"HTTP/request error: {e}",
+                    "findings": {}, "session_id": None,
+                    "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                stop_category = True
+                break
+
+        if stop_category:
             break
 
         transcript = events_to_transcript(setup_message, setup_text, setup_tools,
