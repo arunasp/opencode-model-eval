@@ -82,35 +82,35 @@ def _line_is_negated_at(line, keyword_phrase):
 
 
 # ── Optional enhancement: semantic action-detection fallback ───────
-# Uses TF-IDF cosine similarity against fixed exemplar centroids, NOT
-# an ONNX transformer -- onnxruntime has zero published wheels for
-# musllinux and/or Python 3.14 (microsoft/onnxruntime#25737, still
-# open as of writing), a real, currently-unfixable-upstream constraint
-# confirmed live in this exact container (searched for a drop-in
-# alternative runtime with better wheel coverage first; nothing viable
-# turned up). Closes the same real, measured bug the original
-# transformer version closed: backed_ratio silently collapsed from
+# Closes a real, measured bug: backed_ratio silently collapsed from
 # 0.77 to 0.0 on a functionally identical transcript that used
 # different tool-call marker syntax -- the marker-only check has zero
 # tolerance for format variation.
 #
-# Same architecture as before (embed -> compare against action/
-# narration centroids via cosine similarity), same call contract
-# (ACTION_FALLBACK_AVAILABLE, _action_score(), ACTION_THRESHOLD) --
-# only the embedding mechanism changed. TF-IDF over a fixed vocabulary
-# built from the exemplar sentences themselves needs nothing beyond
-# numpy (already a hard dependency via spaCy), so this is ALWAYS
-# available -- no try/except, no separate model download, no
-# wheel-availability risk on any platform.
+# Two-tier: tries a real onnxruntime-backed transformer embedding
+# first (best case -- a learned embedding generalizes across
+# paraphrases/word choice a keyword-overlap method can't, e.g.
+# "invoked the tooling" vs "ran the command" share no vocabulary at
+# all but mean the same thing), and falls through to TF-IDF cosine
+# similarity against the same fixed exemplar centroids only if that
+# genuinely isn't available. Confirmed live in this exact container:
+# onnxruntime has zero published wheels for musllinux and/or Python
+# 3.14 (microsoft/onnxruntime#25737, still open) -- searched for a
+# drop-in alternative runtime with better wheel coverage first, nothing
+# viable turned up. TF-IDF needs nothing beyond numpy (already a hard
+# dependency via spaCy), so this fallback tier is ALWAYS available --
+# no separate model download, no wheel-availability risk on any
+# platform. Better than the old, more brittle floor (skipping the
+# semantic check entirely and relying on marker-only matching alone).
 #
-# Trade-off, stated plainly, not hidden: TF-IDF matches shared
-# vocabulary/keyword overlap, not learned semantic meaning the way a
-# transformer embedding does -- a paraphrase using entirely different
-# words for the same action scores lower than the transformer approach
-# would have, and a sentence sharing NO vocabulary with either exemplar
-# set embeds to the all-zero vector (action_score() == 0, never counted
-# as an action). Still meaningfully more format-tolerant than pure
-# marker matching for the specific bug this exists to fix: a different
+# Trade-off of the TF-IDF tier specifically, stated plainly, not
+# hidden: it matches shared vocabulary/keyword overlap, not learned
+# semantic meaning -- a paraphrase using entirely different words for
+# the same action scores lower than the transformer tier would have,
+# and a sentence sharing NO vocabulary with either exemplar set embeds
+# to the all-zero vector (action_score() == 0, never counted as an
+# action). Still meaningfully more format-tolerant than pure marker
+# matching for the specific bug this exists to fix: a different
 # tool-call marker SYNTAX describing a genuine action still shares real
 # content words ("ran"/"checked"/"output" etc.) with the action
 # exemplars, which a fixed-string marker regex has zero tolerance for.
@@ -131,54 +131,93 @@ _NARRATION_EXEMPLARS = [
     "I am confident this is how it works.",
 ]
 
-# Common function words stripped before building the vocabulary --
-# without this, near-universal words like "I"/"the"/"this" dominate
-# every exemplar's vector and wash out the actual content-word signal
-# TF-IDF is supposed to capture.
-_STOPWORDS = frozenset({
-    "i", "the", "a", "an", "is", "this", "that", "it", "and", "to", "of",
-    "in", "on", "based", "how", "am",
-})
+ACTION_DETECTION_BACKEND = None  # "onnxruntime" or "tfidf", set below
+_EMBED_MODEL_DIR = os.environ.get(
+    "AXIOM_CVV_EMBEDDING_MODEL_DIR",
+    os.path.expanduser("~/.cache/axiom-cvv/all-minilm-l6-v2"),
+)
 
+try:
+    import onnxruntime as _ort
+    from tokenizers import Tokenizer as _Tokenizer
 
-def _tokenize(sentence):
-    return [w for w in re.findall(r"[a-z']+", sentence.lower()) if w not in _STOPWORDS]
+    _tok_path = os.path.join(_EMBED_MODEL_DIR, "tokenizer.json")
+    _model_path = os.path.join(_EMBED_MODEL_DIR, "model.onnx")
+    if not (os.path.exists(_tok_path) and os.path.exists(_model_path)):
+        raise FileNotFoundError(f"embedding model files not found at {_EMBED_MODEL_DIR}")
 
+    _EMBED_TOK = _Tokenizer.from_file(_tok_path)
+    _EMBED_SESS = _ort.InferenceSession(_model_path)
 
-_ALL_EXEMPLARS = _ACTION_EXEMPLARS + _NARRATION_EXEMPLARS
-_VOCAB = sorted({w for s in _ALL_EXEMPLARS for w in _tokenize(s)})
-_VOCAB_INDEX = {w: i for i, w in enumerate(_VOCAB)}
+    def _embed(sentence):
+        enc = _EMBED_TOK.encode(sentence)
+        ids = np.array([enc.ids], dtype=np.int64)
+        mask = np.array([enc.attention_mask], dtype=np.int64)
+        type_ids = np.zeros_like(ids)
+        out = _EMBED_SESS.run(
+            None, {"input_ids": ids, "attention_mask": mask, "token_type_ids": type_ids}
+        )
+        v = out[1][0]
+        norm = np.linalg.norm(v)
+        return v / norm if norm > 0 else v
 
-# IDF computed over the fixed exemplar set itself (10 "documents") --
-# a word appearing in more exemplars gets down-weighted, standard
-# TF-IDF; +1 smoothing avoids a divide-by-zero for a word that (by
-# construction) appears in every exemplar.
-_DOC_FREQ = np.zeros(len(_VOCAB))
-for _s in _ALL_EXEMPLARS:
-    for _w in set(_tokenize(_s)):
-        _DOC_FREQ[_VOCAB_INDEX[_w]] += 1
-_IDF = np.log((len(_ALL_EXEMPLARS) + 1) / (_DOC_FREQ + 1)) + 1
+    _ACTION_CENTROID = np.mean([_embed(s) for s in _ACTION_EXEMPLARS], axis=0)
+    _ACTION_CENTROID /= np.linalg.norm(_ACTION_CENTROID)
+    _NARRATION_CENTROID = np.mean([_embed(s) for s in _NARRATION_EXEMPLARS], axis=0)
+    _NARRATION_CENTROID /= np.linalg.norm(_NARRATION_CENTROID)
+    ACTION_DETECTION_BACKEND = "onnxruntime"
 
+except Exception:
+    # TF-IDF fallback -- needs nothing beyond numpy/re, both already
+    # imported at module level, so this tier cannot itself fail to set
+    # up (unlike the onnxruntime tier above, which can fail for many
+    # reasons: package not installed, model files not fetched, a
+    # corrupt download, etc).
+    _STOPWORDS = frozenset({
+        "i", "the", "a", "an", "is", "this", "that", "it", "and", "to", "of",
+        "in", "on", "based", "how", "am",
+    })
 
-def _embed(sentence):
-    vec = np.zeros(len(_VOCAB))
-    for w in _tokenize(sentence):
-        idx = _VOCAB_INDEX.get(w)
-        if idx is not None:
-            vec[idx] += 1
-    vec = vec * _IDF
-    norm = np.linalg.norm(vec)
-    return vec / norm if norm > 0 else vec
+    def _tokenize(sentence):
+        return [w for w in re.findall(r"[a-z']+", sentence.lower()) if w not in _STOPWORDS]
 
+    _ALL_EXEMPLARS = _ACTION_EXEMPLARS + _NARRATION_EXEMPLARS
+    _VOCAB = sorted({w for s in _ALL_EXEMPLARS for w in _tokenize(s)})
+    _VOCAB_INDEX = {w: i for i, w in enumerate(_VOCAB)}
 
-def _centroid(exemplars):
-    c = np.mean([_embed(s) for s in exemplars], axis=0)
-    n = np.linalg.norm(c)
-    return c / n if n > 0 else c
+    # IDF computed over the fixed exemplar set itself (10 "documents")
+    # -- a word appearing in more exemplars gets down-weighted,
+    # standard TF-IDF; +1 smoothing avoids a divide-by-zero for a word
+    # that (by construction) appears in every exemplar.
+    _DOC_FREQ = np.zeros(len(_VOCAB))
+    for _s in _ALL_EXEMPLARS:
+        for _w in set(_tokenize(_s)):
+            _DOC_FREQ[_VOCAB_INDEX[_w]] += 1
+    _IDF = np.log((len(_ALL_EXEMPLARS) + 1) / (_DOC_FREQ + 1)) + 1
 
+    def _embed(sentence):
+        vec = np.zeros(len(_VOCAB))
+        for w in _tokenize(sentence):
+            idx = _VOCAB_INDEX.get(w)
+            if idx is not None:
+                vec[idx] += 1
+        vec = vec * _IDF
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0 else vec
 
-_ACTION_CENTROID = _centroid(_ACTION_EXEMPLARS)
-_NARRATION_CENTROID = _centroid(_NARRATION_EXEMPLARS)
+    def _centroid(exemplars):
+        c = np.mean([_embed(s) for s in exemplars], axis=0)
+        n = np.linalg.norm(c)
+        return c / n if n > 0 else c
+
+    _ACTION_CENTROID = _centroid(_ACTION_EXEMPLARS)
+    _NARRATION_CENTROID = _centroid(_NARRATION_EXEMPLARS)
+    ACTION_DETECTION_BACKEND = "tfidf"
+
+# Kept for compatibility with existing callers -- both tiers above
+# always successfully set this up (the TF-IDF except branch cannot
+# itself fail), so this is unconditionally True now; ACTION_DETECTION_BACKEND
+# is the new, more informative signal for which tier is actually active.
 ACTION_FALLBACK_AVAILABLE = True
 
 

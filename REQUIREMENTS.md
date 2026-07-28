@@ -47,7 +47,8 @@ Providers are pulled automatically by `terraform init` -- nothing to install by 
 
 | Dependency | Why |
 |---|---|
-| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`. `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click` (`axiom_cvv_verify.py`'s semantic action-detection fallback is TF-IDF-based, needs nothing beyond numpy, already a hard dependency here -- no separate optional-runtime install). `jupyter` stage adds `pip install jupyterlab` |
+| Network access to `github.com` | `scripts/fetch_embedding_model.sh` clones a GitHub repo with ONNX embedding weights committed in-repo (deliberately avoids a Hugging Face/Ollama runtime dependency). Only matters for the best-case onnxruntime-backed semantic path -- harmless if it fails, `axiom_cvv_verify.py` falls through to its own TF-IDF implementation either way |
+| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`. `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click`, `pip install onnxruntime tokenizers numpy` (`axiom_cvv_verify.py` tries this first for its semantic action-detection, falls through to a TF-IDF implementation needing nothing beyond numpy if this genuinely isn't available -- expected on Alpine/musllinux and/or Python 3.14, confirmed no published wheel for either). `jupyter` stage adds `pip install jupyterlab` |
 
 None of these are host-side installs -- they happen inside the Docker build, listed here so a build failure in an offline/restricted environment points at the right cause.
 

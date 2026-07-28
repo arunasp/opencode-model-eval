@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Regression tests for axiom_cvv_verify.py's TF-IDF-based semantic
-action-detection fallback -- replaces an earlier ONNX-transformer
-implementation that depended on onnxruntime, which has zero published
-wheels for musllinux and/or Python 3.14 (confirmed live in this
-project's own container; microsoft/onnxruntime#25737, still open).
+"""Regression tests for axiom_cvv_verify.py's semantic action-detection
+fallback -- two-tier design: tries a real onnxruntime-backed
+transformer embedding first (best case, generalizes across
+paraphrases), falls through to TF-IDF cosine similarity against the
+same fixed action/narration exemplar centroids only if that genuinely
+isn't available. onnxruntime has zero published wheels for musllinux
+and/or Python 3.14 (confirmed live in this project's own container;
+microsoft/onnxruntime#25737, still open) -- these tests run in an
+environment without onnxruntime installed, so they exercise the TF-IDF
+tier specifically, which is the one actually active on affected
+platforms.
 
-Same architecture as the original (embed -> compare against fixed
-action/narration exemplar centroids via cosine similarity), same call
-contract (ACTION_FALLBACK_AVAILABLE, _action_score(), ACTION_THRESHOLD)
--- only the embedding mechanism changed, from a learned transformer
-embedding to TF-IDF over a fixed vocabulary built from the exemplar
-sentences. Needs nothing beyond numpy, so ACTION_FALLBACK_AVAILABLE is
-now unconditionally True -- no environment-dependent skip needed.
+Same architecture regardless of which tier is active (embed -> compare
+against fixed action/narration exemplar centroids via cosine
+similarity), same call contract (ACTION_FALLBACK_AVAILABLE,
+_action_score(), ACTION_THRESHOLD) -- ACTION_FALLBACK_AVAILABLE is now
+unconditionally True (the TF-IDF tier cannot itself fail to set up);
+ACTION_DETECTION_BACKEND ("onnxruntime" or "tfidf") is the new,
+more informative signal for which tier actually ended up active.
 
 Usage:
     python3 scripts/tools/test_axiom_cvv_action_detection.py
@@ -29,6 +35,9 @@ class ActionDetectionTests(unittest.TestCase):
         # No external runtime/model download needed anymore -- this
         # should never be False.
         self.assertTrue(a.ACTION_FALLBACK_AVAILABLE)
+
+    def test_backend_signal_is_a_known_value(self):
+        self.assertIn(a.ACTION_DETECTION_BACKEND, ("onnxruntime", "tfidf"))
 
     def test_exact_action_exemplar_scores_positive(self):
         score = a._action_score("I ran the command and checked the output.")
