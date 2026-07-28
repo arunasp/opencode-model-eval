@@ -379,21 +379,32 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
 
         log_error_line = _check_session_log_error(session_id)
         if log_error_line is not None:
-            # Direct request: use the log DURING the wait, not just
-            # after -- confirmed live, a real context-size-exceeded
-            # failure was visible in the server log almost instantly,
-            # while our own client would otherwise sit blind for the
-            # full client-side timeout waiting on a socket read that
-            # opencode's own internal retry/compaction loop was never
-            # going to satisfy. Same abort-then-give-the-worker-a-
-            # window pattern as the quota bailout below.
-            try:
-                abort_session(base_url, session_id)
-            except RuntimeError:
-                pass  # best-effort -- we're bailing on this tier regardless
-            done_event.wait(timeout=poll_interval_s)
-            events.append({"timestamp": time.time(), "type": "server_log_error", "line": log_error_line})
-            return None, {"kind": "server_log_error", "message": log_error_line}, events
+            error_classification = _classify_log_error(log_error_line)
+            if error_classification is not None:
+                # Direct request: use the log DURING the wait, not just
+                # after -- confirmed live, a real context-size-exceeded
+                # failure was visible in the server log almost instantly,
+                # while our own client would otherwise sit blind for the
+                # full client-side timeout waiting on a socket read that
+                # opencode's own internal retry/compaction loop was never
+                # going to satisfy. Same abort-then-give-the-worker-a-
+                # window pattern as the quota bailout below. Only reaches
+                # here for an error class _classify_log_error() confirmed
+                # (via opencode's own real retry.ts source) is never
+                # retried internally -- a 429/5xx match returns None
+                # above and falls through to normal polling instead,
+                # exactly as it already did before this detection existed.
+                try:
+                    abort_session(base_url, session_id)
+                except RuntimeError:
+                    pass  # best-effort -- we're bailing on this tier regardless
+                done_event.wait(timeout=poll_interval_s)
+                events.append({"timestamp": time.time(), "type": "server_log_error",
+                                "line": log_error_line, "classification": error_classification})
+                return None, {
+                    "kind": "server_log_error",
+                    "message": f"{error_classification}: {log_error_line}",
+                }, events
 
         status_type = status.get("type")
         now = time.time()
@@ -606,6 +617,72 @@ def _check_session_log_error(session_id: str) -> str | None:
         if "level=ERROR" in line:
             return line
     return None
+
+
+# Direct request: be aware of the documented OpenAI-style error codes
+# (https://developers.openai.com/api/docs/guides/error-codes) while
+# still letting opencode's own internal retry keep going where it
+# legitimately applies -- confirmed via opencode's REAL source
+# (packages/opencode/src/session/retry.ts's retryable() function, not
+# assumed) exactly which classes that is:
+#   - SessionV1.ContextOverflowError is explicitly, permanently
+#     excluded from retry -- the source comment literally says
+#     "context overflow errors should not be retried". Matches what
+#     was confirmed live: the exact failure this whole detection
+#     mechanism exists for.
+#   - Any 5xx status is ALWAYS retried internally, even if the
+#     provider SDK doesn't mark it retryable -- source comment: "5xx
+#     errors are transient server failures and should always be
+#     retried".
+#   - 429/rate-limit classes (FreeUsageLimitError, GoUsageLimitError,
+#     generic "rate limit"/"too many requests" text) are ALSO retried
+#     internally -- surfaced via GET /session/status's own "retry"
+#     type, which is exactly what the existing _QuotaExhausted
+#     mechanism already watches for. Nothing new needed there.
+#   - 401/403 fall through to NOT retried: not >=500, and auth/region
+#     errors are never marked retryable by a provider SDK.
+# This means: bailing out early on a 429 or 5xx detected in the log
+# would PREEMPT a retry opencode's own documented logic was legitimately
+# still going to attempt -- exactly the kind of premature short-circuit
+# this classifier exists to prevent. Only bail out on classes opencode
+# itself has already decided, by its own source, it will NEVER retry.
+_NON_RETRYABLE_HTTP_STATUS_CODES = frozenset({401, 403})
+_CONTEXT_OVERFLOW_MARKERS = (
+    "exceed_context_size_error",
+    "exceeds the available context size",
+    "context exceeds the model limit",
+    "session too large to compact",
+)
+
+
+def _classify_log_error(log_line: str) -> str | None:
+    """Returns a short, precise classification if this log line is an
+    error class opencode's own retry.ts will NEVER retry (confirmed via
+    source), meaning it's safe -- and useful -- to bail out on early.
+    Returns None if it's a class opencode's own internal retry
+    legitimately still has a real chance to recover from (429/5xx) --
+    the caller must NOT treat that as a bailout signal, just let
+    normal polling continue exactly as it already did before this
+    detection existed.
+    """
+    lowered = log_line.lower()
+    for marker in _CONTEXT_OVERFLOW_MARKERS:
+        if marker in lowered:
+            return f"context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"{marker}\")"
+
+    status_match = re.search(r'"code":\s*(\d{3})\b', log_line)
+    if status_match:
+        status = int(status_match.group(1))
+        if status in _NON_RETRYABLE_HTTP_STATUS_CODES:
+            return f"HTTP {status} (non-retryable -- opencode's own retry.ts only ever retries 429/5xx classes)"
+        if status == 429 or status >= 500:
+            return None  # opencode's own internal retry legitimately still applies -- not a bailout signal
+
+    # An ERROR line that doesn't match a known code/marker at all --
+    # fall back to the original, more conservative default: fail fast
+    # on an unclassified error rather than silently keep waiting on
+    # something we can't positively confirm opencode is handling.
+    return "unclassified server error (see the raw log line for detail)"
 
 
 def filter_log_by_identifiers(log_text: str, identifiers: set) -> str:

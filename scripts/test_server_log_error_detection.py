@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Regression tests for the server-log error detection added to
-quota_aware_send_message()/run_category().
+quota_aware_send_message()/run_category(), including the OpenAI
+documented error-code classification
+(https://developers.openai.com/api/docs/guides/error-codes) that
+decides which detected errors are safe to bail out on early versus
+which ones opencode's own internal retry (session/retry.ts, confirmed
+via its real source) legitimately still has a chance to recover from.
 
 Direct request: run_eval_client.py already has full access to
 opencode's own server log (used for the end-of-run capture and the
@@ -11,9 +16,23 @@ instantly, while the client sat blind for the full client-side timeout
 waiting on a socket read that opencode's own internal compaction-retry
 loop was never going to satisfy.
 
+Second direct request: be aware of the documented OpenAI-style error
+codes while still letting opencode's own internal retry keep going
+where it legitimately applies. Confirmed via opencode's REAL source
+(retry.ts's retryable() function) exactly which classes that is:
+ContextOverflowError is explicitly, permanently excluded from retry;
+any 5xx status is ALWAYS retried internally ("5xx errors are transient
+server failures and should always be retried" -- opencode's own
+comment, verbatim); 429/rate-limit classes are also retried internally
+(surfaced via the existing _QuotaExhausted/status-polling mechanism);
+401/403 fall through to not retried. Bailing out early on a 429 or 5xx
+would preempt a retry opencode was legitimately still going to attempt
+-- exactly what this classification exists to prevent.
+
 Usage:
     python3 scripts/test_server_log_error_detection.py
 """
+import json
 import sys
 import tempfile
 import unittest
@@ -65,6 +84,109 @@ class CheckSessionLogErrorTests(unittest.TestCase):
         r.OPENCODE_LOG_PATH = self.fake_log
         result = r._check_session_log_error("ses_TEST123")
         self.assertIsNone(result)
+
+
+class ClassifyLogErrorTests(unittest.TestCase):
+    """Direct request: be aware of the documented OpenAI-style error
+    codes (https://developers.openai.com/api/docs/guides/error-codes)
+    while still letting opencode's own internal retry keep going where
+    it legitimately applies. Confirmed via opencode's REAL source
+    (packages/opencode/src/session/retry.ts's retryable()) exactly
+    which classes that is -- these tests encode that confirmed rule as
+    a permanent regression guard, not just a one-off verification.
+    """
+
+    @staticmethod
+    def _make_line(code, message, error_type=None):
+        body = {"error": {"code": code, "message": message}}
+        if error_type:
+            body["error"]["type"] = error_type
+        return f'timestamp=x level=ERROR message="stream error" error.error="AI_APICallError: {json.dumps(body)}"'
+
+    def test_context_overflow_bails_out(self):
+        # Matches the real live-observed shape exactly. Confirmed via
+        # opencode's own source: ContextOverflowError is explicitly,
+        # permanently excluded from retry.
+        line = self._make_line(400, "request (5602 tokens) exceeds the available context size (4096 tokens)",
+                                "exceed_context_size_error")
+        result = r._classify_log_error(line)
+        self.assertIsNotNone(result)
+        self.assertIn("context overflow", result)
+
+    def test_401_bails_out(self):
+        result = r._classify_log_error(self._make_line(401, "Invalid Authentication"))
+        self.assertIsNotNone(result)
+        self.assertIn("401", result)
+
+    def test_403_bails_out(self):
+        result = r._classify_log_error(self._make_line(403, "region not supported"))
+        self.assertIsNotNone(result)
+        self.assertIn("403", result)
+
+    def test_429_does_not_bail_out(self):
+        # Confirmed via source: opencode's own retry.ts retries this
+        # internally (FreeUsageLimitError/GoUsageLimitError, generic
+        # rate-limit text matching) -- surfaced via the existing
+        # _QuotaExhausted/status-polling mechanism instead. Bailing out
+        # here would preempt a retry opencode was legitimately still
+        # going to attempt.
+        result = r._classify_log_error(self._make_line(429, "rate limit reached"))
+        self.assertIsNone(result)
+
+    def test_500_does_not_bail_out(self):
+        # Confirmed via source: "5xx errors are transient server
+        # failures and should always be retried" -- opencode's own
+        # comment, verbatim.
+        result = r._classify_log_error(self._make_line(500, "internal server error"))
+        self.assertIsNone(result)
+
+    def test_503_does_not_bail_out(self):
+        result = r._classify_log_error(self._make_line(503, "engine overloaded"))
+        self.assertIsNone(result)
+
+    def test_unclassified_error_falls_back_to_fail_fast(self):
+        line = 'timestamp=x level=ERROR message="some totally unrecognized failure with no code field at all"'
+        result = r._classify_log_error(line)
+        self.assertIsNotNone(result)
+        self.assertIn("unclassified", result)
+
+    def test_full_integration_429_does_not_short_circuit_the_wait(self):
+        # End-to-end: a 429 appears in the log mid-poll, but since it's
+        # not bailout-worthy, quota_aware_send_message() must just keep
+        # polling normally and let the real message complete via the
+        # worker thread, exactly as it would have before this
+        # detection mechanism existed.
+        poll_count = [0]
+
+        def fake_check_log(session_id):
+            poll_count[0] += 1
+            if poll_count[0] == 1:
+                return json.dumps({"error": {"code": 429, "message": "rate limit reached"}})
+            return None
+
+        def fake_get_session_status(base_url, session_id):
+            return {"type": "idle"}
+
+        def fake_send_message(base_url, session_id, provider, model_id, text, timeout=300):
+            return {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "ok"}]}
+
+        abort_calls = []
+
+        def fake_abort_session(base_url, session_id):
+            abort_calls.append(session_id)
+
+        with patch.object(r, "_check_session_log_error", fake_check_log), \
+             patch.object(r, "get_session_status", fake_get_session_status), \
+             patch.object(r, "send_message", fake_send_message), \
+             patch.object(r, "abort_session", fake_abort_session):
+            result, quota_info, events = r.quota_aware_send_message(
+                "http://server:4096", "ses_1", "local/ollama", "test-model", "hi",
+                poll_interval_s=0.05)
+
+        self.assertIsNone(quota_info, "a 429 must not produce a bailout signal")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["info"]["finish"], "stop")
+        self.assertEqual(abort_calls, [], "must not have aborted the session over a 429")
 
 
 class RunCategoryServerLogErrorTests(unittest.TestCase):
