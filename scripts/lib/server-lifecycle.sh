@@ -78,3 +78,23 @@ existing_server_backend() {
   _check_port_for_server "${OPENCODE_SERVE_PORT:-49605}" && return 0
   return 1
 }
+
+# Confirmed live: a stale, un-rebuilt Compose image silently ran an
+# eval with none of a real code fix's changes in it -- Terraform's own
+# docker_image resources rebuild automatically via content-hash
+# triggers (terraform/main.tf's dockerfile_sha1/entrypoint_sha1/etc),
+# but Compose has no equivalent mechanism at all; `docker-compose up`/
+# `run` just use whatever image already exists. `docker-compose run
+# --build` isn't reliably supported (confirmed: docker/compose#6876,
+# a real feature request for exactly this that was historically
+# unimplemented -- not something to assume works on the confirmed
+# 1.29.2 legacy CLI in use here). An explicit `docker-compose build`
+# first is the safe, unambiguously-supported equivalent -- cheap/near-
+# instant when nothing changed (Docker's own per-instruction layer
+# cache), a real rebuild when something did. Builds ALL services with
+# a build: key (no service arg), matching Terraform's own apply-time
+# behavior of rebuilding whatever actually needs it.
+ensure_images_built() {
+  echo "docker-compose build"
+  docker-compose build
+}

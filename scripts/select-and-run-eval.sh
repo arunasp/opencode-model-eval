@@ -146,6 +146,7 @@ run_selected() {
   local kind="${kinds[$idx]}"
 
   if [ "$dry_run" = false ]; then
+    ensure_images_built
     ensure_no_conflicting_server || exit 1
   fi
 

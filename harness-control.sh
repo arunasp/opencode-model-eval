@@ -240,7 +240,7 @@ deploy() {
   fi
   case "$backend" in
     Terraform) run_logged "deploy-terraform" make tf-apply ;;
-    "Docker Compose") run_logged "deploy-compose" docker-compose up -d server ;;
+    "Docker Compose") run_logged "deploy-compose" bash -c "docker-compose build && docker-compose up -d server" ;;
   esac
 }
 
@@ -297,6 +297,7 @@ pick_cloud_model_terraform() {
 }
 
 pick_cloud_model_compose() {
+  ensure_images_built
   local candidates_json
   candidates_json="$(docker-compose run --rm -T discover --list-json)" || {
     echo "Failed to fetch candidates." >&2

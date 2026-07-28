@@ -102,9 +102,11 @@ resource "docker_image" "server" {
   }
 
   triggers = {
-    dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1 = filesha1("${var.harness_root}/entrypoint.sh")
-    config_sha1     = filesha1("${var.harness_root}/config/opencode.base.json")
+    dockerfile_sha1              = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1               = filesha1("${var.harness_root}/entrypoint.sh")
+    discover_local_ollama_sha1    = filesha1("${var.harness_root}/scripts/discover_local_ollama_models.py")
+    session_reaper_sha1           = filesha1("${var.harness_root}/scripts/session_reaper.py")
+    config_sha1                   = filesha1("${var.harness_root}/config/opencode.base.json")
   }
 }
 
@@ -125,11 +127,14 @@ resource "docker_image" "harness" {
   }
 
   triggers = {
-    dockerfile_sha1           = filesha1("${var.harness_root}/Dockerfile")
-    entrypoint_sha1           = filesha1("${var.harness_root}/entrypoint.sh")
-    run_eval_client_sha1      = filesha1("${var.harness_root}/scripts/run_eval_client.py")
-    config_sha1               = filesha1("${var.harness_root}/config/opencode.base.json")
-    git_workspace_config_sha1 = filesha1("${var.harness_root}/config/opencode.git-workspace.json")
+    dockerfile_sha1              = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1               = filesha1("${var.harness_root}/entrypoint.sh")
+    run_eval_client_sha1          = filesha1("${var.harness_root}/scripts/run_eval_client.py")
+    discover_and_select_sha1      = filesha1("${var.harness_root}/scripts/discover_and_select_model.py")
+    cvv_scan_sha1                 = filesha1("${var.harness_root}/scripts/tools/cvv_scan.py")
+    axiom_cvv_verify_sha1         = filesha1("${var.harness_root}/scripts/tools/axiom_cvv_verify.py")
+    config_sha1                   = filesha1("${var.harness_root}/config/opencode.base.json")
+    git_workspace_config_sha1     = filesha1("${var.harness_root}/config/opencode.git-workspace.json")
   }
 }
 

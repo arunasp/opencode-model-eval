@@ -87,6 +87,7 @@ build:
 	docker-compose build
 
 server-up:
+	docker-compose build
 	docker-compose up -d server
 
 server-down:
@@ -100,6 +101,7 @@ server-logs:
 	fi
 
 jupyter-up:
+	docker-compose build jupyter
 	docker-compose up -d jupyter
 
 jupyter-down:
@@ -118,6 +120,7 @@ auth:
 	@bash scripts/ensure-auth-data.sh $(KEYS)
 
 git-workspace:
+	docker-compose build git-workspace
 	docker-compose run --rm git-workspace
 
 tf-git-workspace: tf-init
