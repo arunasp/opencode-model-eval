@@ -150,6 +150,48 @@ class ClassifyLogErrorTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("unclassified", result)
 
+    def test_real_too_many_requests_text_does_not_bail_out(self):
+        # Verbatim from a real NVIDIA log (repeated for hours across
+        # multiple sessions) -- no JSON code field at all, just plain
+        # text. Confirmed via source: retry.ts's own
+        # lower.includes("too many requests") check is what actually
+        # retries this -- a code-only regex would have missed it
+        # entirely and incorrectly bailed out on something opencode
+        # was legitimately retrying.
+        line = ('timestamp=2026-07-27T23:43:27.483Z level=ERROR run=c77ca6d5 message="stream error" '
+                'providerID=nvidia-ds4pro modelID=deepseek-ai/deepseek-v4-pro '
+                'session.id=ses_05a6c7df2ffewJEY35W37ogPTQ small=false '
+                'agent=axiom-backend-configurator mode=subagent '
+                'error.error="AI_APICallError: Too Many Requests"')
+        result = r._classify_log_error(line)
+        self.assertIsNone(result)
+
+    def test_real_timeouterror_bails_out_with_precise_classification(self):
+        # Verbatim from a real NVIDIA log. Confirmed via source: a bare
+        # TimeoutError matches none of retry.ts's retryable classes --
+        # opencode has already given up on it internally, so this
+        # should be a precise, named bailout, not generic
+        # "unclassified".
+        line = ('timestamp=2026-07-28T07:22:27.626Z level=ERROR run=cebb9966 message="stream error" '
+                'providerID=nvidia-ds4pro modelID=deepseek-ai/deepseek-v4-pro '
+                'session.id=ses_058a97c14ffeQtMRKDEJd671eo small=false agent=build mode=primary '
+                'error.error="TimeoutError: The operation timed out."')
+        result = r._classify_log_error(line)
+        self.assertIsNotNone(result)
+        self.assertIn("provider-side timeout", result)
+
+    def test_json_exhausted_code_does_not_bail_out(self):
+        line = f'level=ERROR error.error="{json.dumps({"code": "resource_exhausted", "message": "quota exhausted"})}"'
+        self.assertIsNone(r._classify_log_error(line))
+
+    def test_json_unavailable_code_does_not_bail_out(self):
+        line = f'level=ERROR error.error="{json.dumps({"code": "service_unavailable", "message": "temporarily unavailable"})}"'
+        self.assertIsNone(r._classify_log_error(line))
+
+    def test_json_too_many_requests_error_type_does_not_bail_out(self):
+        line = f'level=ERROR error.error="{json.dumps({"type": "error", "error": {"type": "too_many_requests"}})}"'
+        self.assertIsNone(r._classify_log_error(line))
+
     def test_full_integration_429_does_not_short_circuit_the_wait(self):
         # End-to-end: a 429 appears in the log mid-poll, but since it's
         # not bailout-worthy, quota_aware_send_message() must just keep

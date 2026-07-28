@@ -634,17 +634,33 @@ def _check_session_log_error(session_id: str) -> str | None:
 #     provider SDK doesn't mark it retryable -- source comment: "5xx
 #     errors are transient server failures and should always be
 #     retried".
-#   - 429/rate-limit classes (FreeUsageLimitError, GoUsageLimitError,
-#     generic "rate limit"/"too many requests" text) are ALSO retried
-#     internally -- surfaced via GET /session/status's own "retry"
-#     type, which is exactly what the existing _QuotaExhausted
-#     mechanism already watches for. Nothing new needed there.
+#   - 429/rate-limit classes are ALSO retried internally -- but
+#     confirmed live (real NVIDIA log: "AI_APICallError: Too Many
+#     Requests", repeated for HOURS across multiple sessions) that
+#     this often arrives as bare TEXT with no JSON status code at
+#     all, not just a numeric 429. retry.ts's own plain-text check
+#     (`lower.includes("rate increased too quickly") ||
+#     lower.includes("rate limit") || lower.includes("too many
+#     requests")`) is what actually catches this case -- a code-only
+#     check would have missed it entirely and incorrectly bailed out
+#     on something opencode was legitimately retrying. Same for its
+#     JSON-shaped equivalents ("exhausted"/"unavailable" codes,
+#     "too_many_requests" error type).
 #   - 401/403 fall through to NOT retried: not >=500, and auth/region
 #     errors are never marked retryable by a provider SDK.
-# This means: bailing out early on a 429 or 5xx detected in the log
-# would PREEMPT a retry opencode's own documented logic was legitimately
-# still going to attempt -- exactly the kind of premature short-circuit
-# this classifier exists to prevent. Only bail out on classes opencode
+#   - A bare "TimeoutError" (confirmed live: real NVIDIA log,
+#     "TimeoutError: The operation timed out.") matches NONE of the
+#     above -- not ContextOverflowError, not an APIError instance with
+#     a retryable/5xx status, not the rate-limit text/JSON patterns,
+#     not valid JSON at all. retryable() returns undefined for this --
+#     opencode has ALREADY given up retrying it internally. Worth a
+#     fast, PRECISE bailout rather than making our own client wait
+#     another 300s on top of whatever opencode already gave up on.
+# This means: bailing out early on a 429/5xx-class error (however it's
+# spelled -- numeric code or plain text) would PREEMPT a retry
+# opencode's own documented logic was legitimately still going to
+# attempt -- exactly the kind of premature short-circuit this
+# classifier exists to prevent. Only bail out on classes opencode
 # itself has already decided, by its own source, it will NEVER retry.
 _NON_RETRYABLE_HTTP_STATUS_CODES = frozenset({401, 403})
 _CONTEXT_OVERFLOW_MARKERS = (
@@ -653,6 +669,15 @@ _CONTEXT_OVERFLOW_MARKERS = (
     "context exceeds the model limit",
     "session too large to compact",
 )
+# Verbatim from retry.ts's own plain-text rate-limit check.
+_RETRYABLE_TEXT_PATTERNS = (
+    "rate increased too quickly",
+    "rate limit",
+    "too many requests",
+)
+# Verbatim from retry.ts's own JSON-shaped code/type checks.
+_RETRYABLE_JSON_CODE_SUBSTRINGS = ("exhausted", "unavailable")
+_RETRYABLE_JSON_ERROR_TYPE_MARKER = "too_many_requests"
 
 
 def _classify_log_error(log_line: str) -> str | None:
@@ -660,15 +685,19 @@ def _classify_log_error(log_line: str) -> str | None:
     error class opencode's own retry.ts will NEVER retry (confirmed via
     source), meaning it's safe -- and useful -- to bail out on early.
     Returns None if it's a class opencode's own internal retry
-    legitimately still has a real chance to recover from (429/5xx) --
-    the caller must NOT treat that as a bailout signal, just let
-    normal polling continue exactly as it already did before this
-    detection existed.
+    legitimately still has a real chance to recover from (429/5xx, in
+    either its numeric-code or plain-text spelling) -- the caller must
+    NOT treat that as a bailout signal, just let normal polling
+    continue exactly as it already did before this detection existed.
     """
     lowered = log_line.lower()
     for marker in _CONTEXT_OVERFLOW_MARKERS:
         if marker in lowered:
             return f"context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"{marker}\")"
+
+    for pattern in _RETRYABLE_TEXT_PATTERNS:
+        if pattern in lowered:
+            return None  # opencode's own retry.ts explicitly retries this (plain-text rate-limit match)
 
     status_match = re.search(r'"code":\s*(\d{3})\b', log_line)
     if status_match:
@@ -677,6 +706,19 @@ def _classify_log_error(log_line: str) -> str | None:
             return f"HTTP {status} (non-retryable -- opencode's own retry.ts only ever retries 429/5xx classes)"
         if status == 429 or status >= 500:
             return None  # opencode's own internal retry legitimately still applies -- not a bailout signal
+
+    if any(sub in lowered for sub in _RETRYABLE_JSON_CODE_SUBSTRINGS):
+        return None  # opencode's own retry.ts explicitly retries this (JSON code substring match)
+    if _RETRYABLE_JSON_ERROR_TYPE_MARKER in lowered:
+        return None  # opencode's own retry.ts explicitly retries this (JSON error.type match)
+
+    if "timeouterror" in lowered:
+        # Confirmed live (real NVIDIA log) and via source: a bare
+        # TimeoutError matches none of retryable()'s recognized
+        # classes -- opencode has already given up retrying it
+        # internally, so this is a confirmed, precise bailout case,
+        # not a generic unclassified one.
+        return "provider-side timeout (confirmed via opencode's own retry.ts: a bare TimeoutError matches none of its retryable classes, so opencode does not retry this internally either)"
 
     # An ERROR line that doesn't match a known code/marker at all --
     # fall back to the original, more conservative default: fail fast
