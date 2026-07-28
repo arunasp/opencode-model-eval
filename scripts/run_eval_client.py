@@ -348,7 +348,8 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
         if status_type != last_status_type:
             events.append({"timestamp": now, **status})
             print(f"[eval-client] status changed: {last_status_type} -> {status_type} "
-                  f"(elapsed {now - wait_start:.0f}s)", flush=True)
+                  f"(elapsed {now - wait_start:.0f}s, {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))})",
+                  flush=True)
             last_status_type = status_type
             last_progress_print = now
         elif status_type == "retry" and now - last_progress_print >= PROGRESS_PRINT_INTERVAL_S:
@@ -359,7 +360,8 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             # gap this fixes.
             events.append({"timestamp": now, **status})
             print(f"[eval-client] still waiting on retry (elapsed {now - wait_start:.0f}s, "
-                  f"threshold {quota_wait_threshold_s:.0f}s)", flush=True)
+                  f"threshold {quota_wait_threshold_s:.0f}s, "
+                  f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))})", flush=True)
             last_progress_print = now
 
         if status_type == "retry":
@@ -766,7 +768,8 @@ def _poll_ollama_ps_during(ollama_base_url: str, model_id: str, done_event: thre
             status = f"loaded (processor={entry.get('processor', '?')}, until={entry.get('until', '?')})"
         else:
             status = "not loaded"
-        print(f"[eval-client] ollama /api/ps (elapsed {elapsed:.0f}s): {status}", file=sys.stderr)
+        print(f"[eval-client] ollama /api/ps (elapsed {elapsed:.0f}s, "
+              f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {status}", file=sys.stderr)
 
 
 def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
