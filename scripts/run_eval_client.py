@@ -754,18 +754,41 @@ def _poll_ollama_ps_during(ollama_base_url: str, model_id: str, done_event: thre
     periodic /api/ps status purely for visibility -- NOT a gate.
     Confirmed against Ollama's real, documented API schema that
     /api/ps has no busy/processing field, only load/unload residency
-    (name/size/processor/until) -- so this can tell you "is the model
-    resident", not "is it still draining a previous request". Exists
-    so a long wait is distinguishable from a hang, same philosophy as
+    -- so this can tell you "is the model resident", not "is it still
+    draining a previous request". Exists so a long wait is
+    distinguishable from a hang, same philosophy as
     scripts/ollama-model-switch.sh's own /api/ps polling on the host
     side.
+
+    Confirmed live and via multiple independent sources (Ollama's own
+    docs.ollama.com/api/ps plus several third-party references, all
+    consistent): the real JSON field names are size_vram/size (VRAM
+    residency) and expires_at (ISO8601 timestamp) -- there is no field
+    literally named "processor" or "until" at all. Those are only the
+    CLI's own display column labels (ollama/ollama#4840 also confirms
+    size_vram is sometimes OMITTED from the response entirely, not
+    just zero, when nothing's offloaded to GPU -- handled below via
+    .get() with a 0 default, not an assumed-present key).
     """
     start = time.time()
     while not done_event.wait(timeout=poll_interval_s):
         elapsed = time.time() - start
         entry = _ollama_model_entry(model_id, ollama_ps(ollama_base_url))
         if entry is not None:
-            status = f"loaded (processor={entry.get('processor', '?')}, until={entry.get('until', '?')})"
+            total_size = entry.get("size", 0)
+            vram_size = entry.get("size_vram", 0)
+            if total_size > 0:
+                vram_pct = round(vram_size / total_size * 100)
+                if vram_pct >= 100:
+                    processor = "100% GPU"
+                elif vram_pct <= 0:
+                    processor = "100% CPU"
+                else:
+                    processor = f"{vram_pct}% GPU/{100 - vram_pct}% CPU"
+            else:
+                processor = "?"
+            expires_at = entry.get("expires_at", "?")
+            status = f"loaded (processor={processor}, until={expires_at})"
         else:
             status = "not loaded"
         print(f"[eval-client] ollama /api/ps (elapsed {elapsed:.0f}s, "
