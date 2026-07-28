@@ -130,6 +130,31 @@ class _QuotaExhausted(Exception):
         super().__init__(quota_info.get("message", "quota exhausted"))
 
 
+class _ServerLogError(Exception):
+    """Internal signal, not a real error -- same pattern as
+    _QuotaExhausted, raised inside run_category() when
+    quota_aware_send_message()'s polling loop finds a matching ERROR
+    line in opencode's own server log for this session, rather than
+    waiting for our own client-side socket timeout to expire. Direct
+    request: the client already has full access to this log (used for
+    the end-of-run capture and the interrupt handler) -- it should use
+    it DURING the wait too, not just after. Confirmed live: a real
+    "exceeds the available context size" failure showed up in the
+    server log almost instantly, while our own client sat blind for
+    the full 300s waiting on a socket read that opencode's own internal
+    compaction-retry loop was never going to satisfy. Deliberately NOT
+    retried by run_category() -- the specific failure this closes
+    (context-size mismatch) is deterministic, and a genuinely different
+    class of server-log error is unverified/untested territory, so
+    failing fast with the precise message is the safe default until
+    there's real evidence a broader retry policy is warranted.
+    """
+    def __init__(self, message: str, events: list[dict]):
+        self.message = message
+        self.events = events
+        super().__init__(message)
+
+
 def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
     url = f"{base_url.rstrip('/')}{path}"
     data = json.dumps(body).encode("utf-8")
@@ -352,6 +377,24 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             # unaffected by this.
             continue
 
+        log_error_line = _check_session_log_error(session_id)
+        if log_error_line is not None:
+            # Direct request: use the log DURING the wait, not just
+            # after -- confirmed live, a real context-size-exceeded
+            # failure was visible in the server log almost instantly,
+            # while our own client would otherwise sit blind for the
+            # full client-side timeout waiting on a socket read that
+            # opencode's own internal retry/compaction loop was never
+            # going to satisfy. Same abort-then-give-the-worker-a-
+            # window pattern as the quota bailout below.
+            try:
+                abort_session(base_url, session_id)
+            except RuntimeError:
+                pass  # best-effort -- we're bailing on this tier regardless
+            done_event.wait(timeout=poll_interval_s)
+            events.append({"timestamp": time.time(), "type": "server_log_error", "line": log_error_line})
+            return None, {"kind": "server_log_error", "message": log_error_line}, events
+
         status_type = status.get("type")
         now = time.time()
         if status_type != last_status_type:
@@ -389,6 +432,7 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
                     done_event.wait(timeout=poll_interval_s)
                     action = status.get("action") or {}
                     return None, {
+                        "kind": "quota",
                         "reason": action.get("reason", "unknown"),
                         "wait_seconds": wait_s,
                         "message": status.get("message", ""),
@@ -541,6 +585,29 @@ def extract_error_refs(text: str) -> set:
     return set(re.findall(r'"ref":\s*"(err_[a-zA-Z0-9]+)"', text))
 
 
+def _check_session_log_error(session_id: str) -> str | None:
+    """Checks opencode's own server log for a "level=ERROR" line
+    already mentioning this session -- best-effort, returns None on
+    any failure (missing file, read error, etc.) rather than raising,
+    since this is purely an early-detection optimization layered on
+    top of the existing timeout-based give-up, not a replacement for
+    it. Reuses filter_log_by_identifiers' own substring-matching logic
+    (same reasoning: session IDs appear under different field names
+    across different log line shapes) rather than a fresh parser.
+    """
+    try:
+        if not OPENCODE_LOG_PATH.exists():
+            return None
+        full_log = OPENCODE_LOG_PATH.read_text(errors="replace")
+    except OSError:
+        return None
+    session_lines = filter_log_by_identifiers(full_log, {session_id})
+    for line in session_lines.splitlines():
+        if "level=ERROR" in line:
+            return line
+    return None
+
+
 def filter_log_by_identifiers(log_text: str, identifiers: set) -> str:
     """Keeps only lines containing any of the given identifiers as a
     substring. Deliberately substring matching, not a specific
@@ -618,12 +685,16 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                 setup_resp, quota_info, setup_events = quota_aware_send_message(
                     base_url, session_id, provider, model_id, setup_message)
                 if quota_info is not None:
+                    if quota_info.get("kind") == "server_log_error":
+                        raise _ServerLogError(quota_info["message"], setup_events)
                     raise _QuotaExhausted(quota_info, setup_events)
                 print(_elapsed_marker("setup"), end="", file=sys.stderr, flush=True)
                 setup_text, setup_tools = extract_reply(setup_resp)
                 probe_resp, quota_info, probe_events = quota_aware_send_message(
                     base_url, session_id, provider, model_id, tier_def["prompt"])
                 if quota_info is not None:
+                    if quota_info.get("kind") == "server_log_error":
+                        raise _ServerLogError(quota_info["message"], setup_events + probe_events)
                     raise _QuotaExhausted(quota_info, setup_events + probe_events)
                 print(_elapsed_marker("probe"), end="", file=sys.stderr, flush=True)
                 probe_text, probe_tools = extract_reply(probe_resp)
@@ -668,6 +739,32 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                     "reason": f"quota/rate-limit exhausted: {e.quota_info['reason']} -- {e.quota_info['message']}",
                     "findings": {}, "session_id": session_id,
                     "quota_wait_seconds": e.quota_info["wait_seconds"],
+                    "status_events": e.events,
+                    "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                stop_category = True
+                break
+            except _ServerLogError as e:
+                # Detected via opencode's OWN server log, faster and
+                # more precise than waiting for our own client-side
+                # socket timeout to expire -- direct request: the
+                # client already has full access to this log (used for
+                # the end-of-run capture and the interrupt handler),
+                # it should use it DURING the wait too. Deliberately
+                # NOT retried (unlike a genuine socket timeout below):
+                # the specific failure this closes (a context-size
+                # mismatch) is deterministic, and a genuinely different
+                # class of server-log error is unverified territory --
+                # failing fast with the precise message is the safe
+                # default.
+                print(f" -> SERVER ERROR ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): "
+                      f"{e.message}", file=sys.stderr)
+                summary_dots.append("E")
+                tier_results.append({
+                    "tier": tier_num, "source": tier_def["source"], "passed": False,
+                    "needs_manual_review": False,
+                    "reason": f"opencode server log error: {e.message}",
+                    "findings": {}, "session_id": None,
                     "status_events": e.events,
                     "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 })
