@@ -791,8 +791,16 @@ def _poll_ollama_ps_during(ollama_base_url: str, model_id: str, done_event: thre
             status = f"loaded (processor={processor}, until={expires_at})"
         else:
             status = "not loaded"
+
+        dispatched_at = _WARMUP_REQUEST_STATE["dispatched_at"]
+        if dispatched_at is None:
+            request_status = "\"hi\" not yet sent"
+        else:
+            request_status = f'"hi" outstanding for {time.time() - dispatched_at:.0f}s'
+
         print(f"[eval-client] ollama /api/ps (elapsed {elapsed:.0f}s, "
-              f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {status}", file=sys.stderr)
+              f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}): {status}, {request_status}",
+              file=sys.stderr)
 
 
 def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
@@ -836,6 +844,7 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     try:
         session_id = create_session(base_url)
         _CURRENT_RUN_STATE["session_id"] = session_id
+        _WARMUP_REQUEST_STATE["dispatched_at"] = time.time()
         send_message(base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
         print("[eval-client] warm-up complete", file=sys.stderr)
     except RuntimeError as e:
@@ -846,6 +855,7 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     finally:
         done_event.set()
         poller.join(timeout=5)
+        _WARMUP_REQUEST_STATE["dispatched_at"] = None
         if session_id is not None:
             try:
                 abort_session(base_url, session_id)
@@ -918,6 +928,20 @@ _CURRENT_RUN_STATE = {
     "model_id": None,
     "results_dir": None,
 }
+
+# Confirmed live: two genuinely different scenarios during warm-up look
+# identical in the poller's output without this -- a large model still
+# loading into VRAM (Ollama's own /api/ps residency hasn't flipped to
+# loaded yet) versus a light model that loaded almost instantly but
+# whose actual "hi" generation is itself just slow (residency shows
+# loaded immediately, but the real bottleneck is generation, not
+# loading). _poll_ollama_ps_during() only ever showed Ollama's own
+# residency state, with nothing about whether the real "hi" round-trip
+# was even dispatched yet, let alone how long it's been outstanding.
+# warm_up_local_model() sets "dispatched_at" right before calling
+# send_message(); the poller (a separate thread) reads it to report
+# both signals side by side instead of conflating them.
+_WARMUP_REQUEST_STATE = {"dispatched_at": None}
 
 _INTERRUPT_HANDLING = False  # re-entrancy guard -- a second signal while cleaning up shouldn't restart the cleanup
 
