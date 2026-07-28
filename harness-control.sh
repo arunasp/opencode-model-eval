@@ -197,6 +197,11 @@ deploy() {
   existing="$(existing_server_backend)" || existing=""
   local backend=""
   if [ -n "${existing}" ]; then
+    local found_port
+    case "${existing}" in
+      Terraform) found_port="49604" ;;
+      *) found_port="${OPENCODE_SERVE_PORT:-49605}" ;;
+    esac
     local choice
     if [ -n "${FORCE_REDEPLOY:-}" ]; then
       # Batch/scripted execution has no TTY for host_arrow_menu to read
@@ -207,7 +212,7 @@ deploy() {
       echo "FORCE_REDEPLOY=1 set -- redeploying without prompting (existing: ${existing})"
     else
       choice="$(host_arrow_menu \
-        "A server is already reachable at localhost:${OPENCODE_SERVE_PORT:-49604} (${existing}). Reuse it, or redeploy?" \
+        "A server is already reachable at localhost:${found_port} (${existing}). Reuse it, or redeploy?" \
         "Reuse existing" "Redeploy (tear down first)")" || return 1
     fi
     if [ "${choice}" = "Reuse existing" ]; then

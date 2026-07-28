@@ -102,19 +102,26 @@ done <<< "$LOCAL_MODELS"
 source scripts/lib/server-lifecycle.sh
 
 # `docker-compose run --rm eval` implicitly starts `server` via
-# Compose's own depends_on -- if something else (confirmed: Terraform's
-# server container, same default port) already holds
-# OPENCODE_SERVE_PORT, that implicit start hits the exact same
-# "port is already allocated" bind failure harness-control.sh's
-# deploy() now catches, but this script never went through deploy()
-# at all -- confirmed live, a real gap this closes.
+# Compose's own depends_on -- if something else (confirmed live:
+# Terraform's server container, back when it shared the same default
+# port as Compose) already holds OPENCODE_SERVE_PORT, that implicit
+# start hits the exact same "port is already allocated" bind failure
+# harness-control.sh's deploy() now catches, but this script never
+# went through deploy() at all -- confirmed live, a real gap this
+# closes. Compose (49605) and Terraform (49604) now default to
+# different ports specifically so this stops being the common case,
+# but the check stays as a safety net for an explicit override.
 ensure_no_conflicting_server() {
   local existing
-  existing="$(existing_server_backend)" || return 0  # nothing up -- depends_on will start it cleanly
+  existing="$(existing_server_backend "${OPENCODE_SERVE_PORT:-49605}")" || return 0  # nothing up -- depends_on will start it cleanly
   if [ "${existing}" = "Docker Compose" ]; then
     return 0  # already Compose's own server -- depends_on will just reuse it
   fi
-  # Something else holds the port -- would collide.
+  # Something else holds this SPECIFIC port -- would collide. With
+  # Compose (49605) and Terraform (49604) now on different default
+  # ports, this only fires if OPENCODE_SERVE_PORT was explicitly
+  # overridden back into a collision -- the common case is this
+  # simply never triggers anymore.
   if [ -n "${FORCE_REDEPLOY:-}" ]; then
     echo "FORCE_REDEPLOY=1 set -- tearing down existing ${existing} deployment on this port first"
   elif [ -t 0 ]; then

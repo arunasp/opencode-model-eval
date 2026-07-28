@@ -28,16 +28,21 @@ services:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
     command: ["serve"]
-    # 49604: this is the HOST-published port -- 4096 (container-internal,
+    # 49605: this is the HOST-published port -- 4096 (container-internal,
     # right side) risked colliding with Axiom's own separate opencode
     # serve instance on the same host. Picked from IANA's dynamic/private
     # port range (49152-65535, RFC 6335) to avoid registered-service
     # collisions -- not verified against Axiom's actual chosen port,
-    # since that's outside this repo's config. Override via
-    # OPENCODE_SERVE_PORT if it still collides: `OPENCODE_SERVE_PORT=<port>
+    # since that's outside this repo's config. Deliberately DIFFERENT
+    # from terraform/variables.tf's var.serve_port (49604) -- confirmed
+    # live that sharing one default meant Compose and Terraform could
+    # never both be up at once without a real port-bind collision, even
+    # though README's "Two deployment paths" section already frames
+    # both as legitimately simultaneous. Override via OPENCODE_SERVE_PORT
+    # if it still collides: `OPENCODE_SERVE_PORT=<port>
     # docker-compose up`.
     ports:
-      - "${OPENCODE_SERVE_PORT:-49604}:4096"
+      - "${OPENCODE_SERVE_PORT:-49605}:4096"
     # Linux-only (matches Cyberdyne): routes host.docker.internal to the
     # docker host's bridge gateway, since this container is on the
     # default bridge network, not host mode. host-gateway only reaches
