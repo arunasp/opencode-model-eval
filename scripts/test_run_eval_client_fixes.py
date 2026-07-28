@@ -32,11 +32,67 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_eval_client as r  # noqa: E402
+
+
+class WarmUpFailureMessageWordingTests(unittest.TestCase):
+    """Real bug found by correlating a real run's own report.json
+    (started_utc) against its eval_client.log: warm-up's failure
+    message always said "at the 600s hard timeout" regardless of what
+    actually happened -- a real run's own timestamps showed warm-up
+    failing in the SAME SECOND the run started (an immediate HTTP 500,
+    not a timeout at all), yet the printed message still claimed the
+    full 600s timeout had been hit.
+    """
+
+    @staticmethod
+    def _run_warmup_and_capture(exc_message):
+        def fake_create_session(base_url):
+            return "ses_test"
+
+        def fake_abort_session(base_url, session_id):
+            pass
+
+        def fake_ollama_ps(ollama_base_url):
+            return []
+
+        def fake_qasm(base_url, session_id, provider, model_id, text, timeout=300):
+            raise RuntimeError(exc_message)
+
+        buf = io.StringIO()
+        with patch.object(r, "create_session", fake_create_session), \
+             patch.object(r, "abort_session", fake_abort_session), \
+             patch.object(r, "ollama_ps", fake_ollama_ps), \
+             patch.object(r, "quota_aware_send_message", fake_qasm), \
+             redirect_stderr(buf):
+            r.warm_up_local_model("http://server:4096", "local/ollama", "test-model")
+
+        lines = [line for line in buf.getvalue().splitlines()
+                 if "warm-up failed" in line or "warm-up timed out" in line]
+        return lines[0]
+
+    def test_genuine_timeout_says_timed_out(self):
+        line = self._run_warmup_and_capture(
+            "POST /session/ses_test/message timed out after 600s waiting for a response from x")
+        self.assertTrue(line.startswith("[eval-client] warm-up timed out at the"))
+        self.assertIn("hard timeout", line)
+
+    def test_immediate_error_does_not_falsely_claim_a_timeout(self):
+        # The exact real case: an immediate HTTP 500 (UnknownError),
+        # not a timeout -- confirmed live via a real run's own
+        # started_utc matching its first category's start timestamp
+        # to the same second.
+        line = self._run_warmup_and_capture(
+            'POST /session/x/message failed: HTTP 500: {"name":"UnknownError",'
+            '"data":{"message":"Unexpected server error."}}')
+        self.assertTrue(line.startswith("[eval-client] warm-up failed ("))
+        self.assertNotIn("hard timeout", line)
+        self.assertNotIn("600s", line)
 
 
 class ModelSlugPathTests(unittest.TestCase):

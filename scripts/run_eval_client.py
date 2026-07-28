@@ -1126,10 +1126,23 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
         else:
             print("[eval-client] warm-up complete", file=sys.stderr)
     except RuntimeError as e:
-        print(f"[eval-client] warm-up failed/timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
-              f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
-              f"surface the same problem with proper category/tier context if it's genuine",
-              file=sys.stderr)
+        # Confirmed live: this message previously always claimed "at
+        # the {WARMUP_TIMEOUT_S}s hard timeout" regardless of what
+        # actually happened -- a real run's own timestamps showed
+        # warm-up failing in the SAME SECOND the run started (an
+        # immediate HTTP 500, not a timeout at all), yet the printed
+        # message still said "600s hard timeout", which would have
+        # sent anyone reading it looking for a slow-response problem
+        # that was never real.
+        if "timed out after" in str(e):
+            print(f"[eval-client] warm-up timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
+                  f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
+                  f"surface the same problem with proper category/tier context if it's genuine",
+                  file=sys.stderr)
+        else:
+            print(f"[eval-client] warm-up failed ({e}) -- proceeding to the real test ladder "
+                  f"anyway, which will surface the same problem with proper category/tier "
+                  f"context if it's genuine", file=sys.stderr)
     finally:
         done_event.set()
         poller.join(timeout=5)
