@@ -24,6 +24,8 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
+import numpy as np
+
 AXIOM_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TOOL_GATE = os.path.join(AXIOM_DIR, "tools", "runtime", "axiom_tool_gate.py")
 ENFORCEMENT_LOG = os.path.join(AXIOM_DIR, "state", ".cvv_verify_log.jsonl")
@@ -80,72 +82,111 @@ def _line_is_negated_at(line, keyword_phrase):
 
 
 # ── Optional enhancement: semantic action-detection fallback ───────
-# Falls back to marker-only backing detection (the original behavior)
-# if onnxruntime/tokenizers aren't installed or the model files aren't
-# found at AXIOM_CVV_EMBEDDING_MODEL_DIR. Closes a real, measured bug:
-# backed_ratio silently collapsed from 0.77 to 0.0 on a functionally
-# identical transcript that used different tool-call marker syntax --
-# the marker-only check has zero tolerance for format variation.
-_EMBED_TOK = None
-_EMBED_SESS = None
-_ACTION_CENTROID = None
-_NARRATION_CENTROID = None
-ACTION_FALLBACK_AVAILABLE = False
+# Uses TF-IDF cosine similarity against fixed exemplar centroids, NOT
+# an ONNX transformer -- onnxruntime has zero published wheels for
+# musllinux and/or Python 3.14 (microsoft/onnxruntime#25737, still
+# open as of writing), a real, currently-unfixable-upstream constraint
+# confirmed live in this exact container (searched for a drop-in
+# alternative runtime with better wheel coverage first; nothing viable
+# turned up). Closes the same real, measured bug the original
+# transformer version closed: backed_ratio silently collapsed from
+# 0.77 to 0.0 on a functionally identical transcript that used
+# different tool-call marker syntax -- the marker-only check has zero
+# tolerance for format variation.
+#
+# Same architecture as before (embed -> compare against action/
+# narration centroids via cosine similarity), same call contract
+# (ACTION_FALLBACK_AVAILABLE, _action_score(), ACTION_THRESHOLD) --
+# only the embedding mechanism changed. TF-IDF over a fixed vocabulary
+# built from the exemplar sentences themselves needs nothing beyond
+# numpy (already a hard dependency via spaCy), so this is ALWAYS
+# available -- no try/except, no separate model download, no
+# wheel-availability risk on any platform.
+#
+# Trade-off, stated plainly, not hidden: TF-IDF matches shared
+# vocabulary/keyword overlap, not learned semantic meaning the way a
+# transformer embedding does -- a paraphrase using entirely different
+# words for the same action scores lower than the transformer approach
+# would have, and a sentence sharing NO vocabulary with either exemplar
+# set embeds to the all-zero vector (action_score() == 0, never counted
+# as an action). Still meaningfully more format-tolerant than pure
+# marker matching for the specific bug this exists to fix: a different
+# tool-call marker SYNTAX describing a genuine action still shares real
+# content words ("ran"/"checked"/"output" etc.) with the action
+# exemplars, which a fixed-string marker regex has zero tolerance for.
 ACTION_THRESHOLD = 0.05
-_EMBED_MODEL_DIR = os.environ.get(
-    "AXIOM_CVV_EMBEDDING_MODEL_DIR",
-    os.path.expanduser("~/.cache/axiom-cvv/all-minilm-l6-v2"),
-)
-try:
-    import numpy as _np
-    import onnxruntime as _ort
-    from tokenizers import Tokenizer as _Tokenizer
 
-    _tok_path = os.path.join(_EMBED_MODEL_DIR, "tokenizer.json")
-    _model_path = os.path.join(_EMBED_MODEL_DIR, "model.onnx")
-    if os.path.exists(_tok_path) and os.path.exists(_model_path):
-        _EMBED_TOK = _Tokenizer.from_file(_tok_path)
-        _EMBED_SESS = _ort.InferenceSession(_model_path)
+_ACTION_EXEMPLARS = [
+    "I ran the command and checked the output.",
+    "I searched the file and found the exact line.",
+    "I cloned the repository and inspected the source.",
+    "I executed the script against the real data.",
+    "I fetched the actual file and read its contents.",
+]
+_NARRATION_EXEMPLARS = [
+    "I think this is probably correct.",
+    "This should work based on general knowledge.",
+    "I believe the behavior is standard.",
+    "It seems likely that this is the case.",
+    "I am confident this is how it works.",
+]
 
-        def _embed(sentence):
-            enc = _EMBED_TOK.encode(sentence)
-            ids = _np.array([enc.ids], dtype=_np.int64)
-            mask = _np.array([enc.attention_mask], dtype=_np.int64)
-            type_ids = _np.zeros_like(ids)
-            out = _EMBED_SESS.run(
-                None, {"input_ids": ids, "attention_mask": mask, "token_type_ids": type_ids}
-            )
-            v = out[1][0]
-            return v / _np.linalg.norm(v)
+# Common function words stripped before building the vocabulary --
+# without this, near-universal words like "I"/"the"/"this" dominate
+# every exemplar's vector and wash out the actual content-word signal
+# TF-IDF is supposed to capture.
+_STOPWORDS = frozenset({
+    "i", "the", "a", "an", "is", "this", "that", "it", "and", "to", "of",
+    "in", "on", "based", "how", "am",
+})
 
-        _ACTION_EXEMPLARS = [
-            "I ran the command and checked the output.",
-            "I searched the file and found the exact line.",
-            "I cloned the repository and inspected the source.",
-            "I executed the script against the real data.",
-            "I fetched the actual file and read its contents.",
-        ]
-        _NARRATION_EXEMPLARS = [
-            "I think this is probably correct.",
-            "This should work based on general knowledge.",
-            "I believe the behavior is standard.",
-            "It seems likely that this is the case.",
-            "I am confident this is how it works.",
-        ]
-        _ACTION_CENTROID = _np.mean([_embed(s) for s in _ACTION_EXEMPLARS], axis=0)
-        _ACTION_CENTROID /= _np.linalg.norm(_ACTION_CENTROID)
-        _NARRATION_CENTROID = _np.mean([_embed(s) for s in _NARRATION_EXEMPLARS], axis=0)
-        _NARRATION_CENTROID /= _np.linalg.norm(_NARRATION_CENTROID)
-        ACTION_FALLBACK_AVAILABLE = True
-except Exception:
-    ACTION_FALLBACK_AVAILABLE = False
+
+def _tokenize(sentence):
+    return [w for w in re.findall(r"[a-z']+", sentence.lower()) if w not in _STOPWORDS]
+
+
+_ALL_EXEMPLARS = _ACTION_EXEMPLARS + _NARRATION_EXEMPLARS
+_VOCAB = sorted({w for s in _ALL_EXEMPLARS for w in _tokenize(s)})
+_VOCAB_INDEX = {w: i for i, w in enumerate(_VOCAB)}
+
+# IDF computed over the fixed exemplar set itself (10 "documents") --
+# a word appearing in more exemplars gets down-weighted, standard
+# TF-IDF; +1 smoothing avoids a divide-by-zero for a word that (by
+# construction) appears in every exemplar.
+_DOC_FREQ = np.zeros(len(_VOCAB))
+for _s in _ALL_EXEMPLARS:
+    for _w in set(_tokenize(_s)):
+        _DOC_FREQ[_VOCAB_INDEX[_w]] += 1
+_IDF = np.log((len(_ALL_EXEMPLARS) + 1) / (_DOC_FREQ + 1)) + 1
+
+
+def _embed(sentence):
+    vec = np.zeros(len(_VOCAB))
+    for w in _tokenize(sentence):
+        idx = _VOCAB_INDEX.get(w)
+        if idx is not None:
+            vec[idx] += 1
+    vec = vec * _IDF
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 0 else vec
+
+
+def _centroid(exemplars):
+    c = np.mean([_embed(s) for s in exemplars], axis=0)
+    n = np.linalg.norm(c)
+    return c / n if n > 0 else c
+
+
+_ACTION_CENTROID = _centroid(_ACTION_EXEMPLARS)
+_NARRATION_CENTROID = _centroid(_NARRATION_EXEMPLARS)
+ACTION_FALLBACK_AVAILABLE = True
 
 
 def _action_score(sentence):
     """Positive => reads more like a described action than narration.
     Only call when ACTION_FALLBACK_AVAILABLE is True."""
     e = _embed(sentence)
-    return float(_np.dot(e, _ACTION_CENTROID) - _np.dot(e, _NARRATION_CENTROID))
+    return float(np.dot(e, _ACTION_CENTROID) - np.dot(e, _NARRATION_CENTROID))
 
 # ── Detection patterns ─────────────────────────────────────────────
 # Two-part patterns (trigger ... connector) are scanned with

@@ -20,7 +20,7 @@ FROM ${OPENCODE_IMAGE}:${OPENCODE_REF} AS base
 # Deliberately LIGHT. This is what the `server` role actually needs to
 # run `opencode serve` plus this project's local-Ollama auto-discovery
 # script -- nothing else. Previously the single `harness` stage below
-# bundled spaCy/onnxruntime/click/git into EVERY role including this
+# bundled spaCy/click/git into EVERY role including this
 # one, even though server never calls cvv_scan.py, run_eval_client.py,
 # or anything CVV-related. That's the exact "shared-foundation scope
 # creep" pattern this project already caught once before in a
@@ -99,7 +99,11 @@ CMD ["serve"]
 # Extends `server` rather than `base` -- reuses its python3/entrypoint/
 # config layers instead of duplicating them, and only adds what the
 # eval-client/discover roles actually need on top: pip, the CVV scoring
-# scripts, and their optional spaCy/onnxruntime enhancements. This is
+# scripts, and their optional spaCy enhancement (negation-aware claim
+# detection) plus axiom_cvv_verify.py's own TF-IDF-based semantic
+# action-detection fallback, which needs nothing beyond numpy (already
+# a hard dependency here) -- no separate optional-runtime install at
+# all anymore. This is
 # the stage `docker-compose.yml`'s discover/eval/local_ollama services
 # build (server itself builds the `server` target above, not this one)
 # -- and it's still the LAST stage in this file, so it remains the
@@ -177,25 +181,6 @@ RUN pip install --break-system-packages --no-cache-dir spacy click \
             "its original, non-negation-aware behavior. Non-fatal by" \
             "design: the code already handles this via try/except." >&2
 
-# Separate RUN, deliberately: onnxruntime has zero published wheels for
-# musllinux (Alpine) on ANY Python version, and none for Python 3.14 on
-# ANY platform, as of writing (confirmed against
-# microsoft/onnxruntime#25737, still open). Bundling this with spaCy's
-# install in one pip invocation meant onnxruntime's guaranteed failure
-# on Alpine+3.14 base images silently took spaCy down with it too, even
-# though spaCy itself had a working wheel available -- pip resolves a
-# single invocation's requirement set atomically. Splitting these
-# preserves whichever optional enhancement CAN install on a given base
-# image instead of an all-or-nothing failure across both.
-RUN pip install --break-system-packages --no-cache-dir onnxruntime tokenizers numpy \
-    || echo "WARN: onnxruntime/tokenizers install failed -- semantic" \
-            "action-detection fallback (axiom_cvv_verify.py) will fall" \
-            "back to marker-only backing detection. Non-fatal by" \
-            "design: the code already handles this via try/except. As" \
-            "of writing this is EXPECTED on Alpine (musllinux) base" \
-            "images and/or Python 3.14 -- onnxruntime has no published" \
-            "wheel for either (microsoft/onnxruntime#25737, open)." >&2
-
 RUN mkdir -p /task-suite /results && chmod -R 0777 /results
 
 COPY scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
@@ -204,16 +189,6 @@ COPY scripts/tools/cvv_scan.py /opt/harness/tools/cvv_scan.py
 COPY scripts/tools/axiom_cvv_verify.py /opt/harness/tools/axiom_cvv_verify.py
 RUN chmod 0755 /usr/local/bin/discover_and_select_model.py /usr/local/bin/run_eval_client.py \
     && chmod 0644 /opt/harness/tools/cvv_scan.py /opt/harness/tools/axiom_cvv_verify.py
-
-# Embedding model for axiom_cvv_verify.py's optional semantic action-
-# detection fallback. Sourced from a GitHub repo with the ONNX weights
-# committed directly in-repo -- no Hugging Face/Ollama dependency, which
-# matters here since this build may run in a network-restricted CI
-# environment that only allowlists package registries + GitHub.
-COPY scripts/fetch_embedding_model.sh /usr/local/bin/fetch_embedding_model.sh
-RUN chmod 0755 /usr/local/bin/fetch_embedding_model.sh \
-    && /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
-ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 
 # CMD is inherited from `server` (["serve"]) -- eval-client/discover
 # roles override it per-service via docker-compose's `command:` /

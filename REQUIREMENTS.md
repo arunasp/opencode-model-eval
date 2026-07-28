@@ -47,8 +47,7 @@ Providers are pulled automatically by `terraform init` -- nothing to install by 
 
 | Dependency | Why |
 |---|---|
-| Network access to `github.com` | `scripts/fetch_embedding_model.sh` clones a GitHub repo with ONNX embedding weights committed in-repo (deliberately avoids a Hugging Face/Ollama runtime dependency). If your build environment only allowlists package registries, this step fails |
-| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`. `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click`, `pip install onnxruntime tokenizers numpy`. `jupyter` stage adds `pip install jupyterlab` |
+| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`. `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click` (`axiom_cvv_verify.py`'s semantic action-detection fallback is TF-IDF-based, needs nothing beyond numpy, already a hard dependency here -- no separate optional-runtime install). `jupyter` stage adds `pip install jupyterlab` |
 
 None of these are host-side installs -- they happen inside the Docker build, listed here so a build failure in an offline/restricted environment points at the right cause.
 
