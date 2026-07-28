@@ -304,7 +304,8 @@ def send_message(base_url: str, session_id: str, provider: str, model_id: str, t
 
 def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
                               quota_wait_threshold_s: float = QUOTA_WAIT_THRESHOLD_S,
-                              poll_interval_s: float = STATUS_POLL_INTERVAL_S) -> tuple[dict | None, dict | None, list[dict]]:
+                              poll_interval_s: float = STATUS_POLL_INTERVAL_S,
+                              timeout: int = 300) -> tuple[dict | None, dict | None, list[dict]]:
     """Wraps send_message() with concurrent, non-blocking status
     awareness -- NOT a retry mechanism itself, since opencode already
     has one (session/retry.ts, confirmed unbounded by attempt count or
@@ -342,6 +343,15 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
     but needed several internal opencode retries against a rate limit
     looks different in this list than one that passed cleanly on the
     first attempt, even though both end up PASS in the tier record.
+
+    timeout is passed straight through to the inner send_message()
+    call -- defaults to 300 (send_message's own existing default, so
+    existing tier round-trips are completely unaffected) but lets a
+    caller with a legitimately different budget (warm_up_local_model()
+    passing WARMUP_TIMEOUT_S, confirmed live to matter -- Ollama
+    cold-start on a large model can take a while) request its own,
+    rather than silently getting shrunk to 300s the moment it's routed
+    through this function instead of calling send_message() directly.
     """
     result_holder: dict = {}
     exception_holder: dict = {}
@@ -350,7 +360,7 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
 
     def worker():
         try:
-            result_holder["value"] = send_message(base_url, session_id, provider, model_id, text)
+            result_holder["value"] = send_message(base_url, session_id, provider, model_id, text, timeout=timeout)
         except Exception as e:  # noqa: BLE001 -- deliberately broad, re-raised verbatim below
             exception_holder["value"] = e
         finally:
@@ -1097,8 +1107,24 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
         session_id = create_session(base_url)
         _CURRENT_RUN_STATE["session_id"] = session_id
         _WARMUP_REQUEST_STATE["dispatched_at"] = time.time()
-        send_message(base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
-        print("[eval-client] warm-up complete", file=sys.stderr)
+        # Confirmed live: a raw send_message() call here meant warm-up
+        # had ZERO awareness of the server-log-error detection wired
+        # into quota_aware_send_message() -- a real run wasted the
+        # FULL 600s WARMUP_TIMEOUT_S waiting on a context-overflow
+        # error that later showed up detected in under a second once
+        # the real test tiers started (they DO go through
+        # quota_aware_send_message()). Routing warm-up through the
+        # same function gets the same fast detection for free, instead
+        # of duplicating the log-check logic here separately.
+        _, quota_info, _ = quota_aware_send_message(
+            base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
+        if quota_info is not None:
+            print(f"[eval-client] warm-up bailed out early ({quota_info.get('kind', 'quota')}): "
+                  f"{quota_info.get('message', quota_info)} -- proceeding to the real test ladder "
+                  f"anyway, which will surface the same problem with proper category/tier context "
+                  f"if it's genuine", file=sys.stderr)
+        else:
+            print("[eval-client] warm-up complete", file=sys.stderr)
     except RuntimeError as e:
         print(f"[eval-client] warm-up failed/timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
               f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
@@ -1273,6 +1299,43 @@ signal.signal(signal.SIGINT, _handle_interrupt)
 signal.signal(signal.SIGTERM, _handle_interrupt)
 
 
+class _TeeStream:
+    """Writes to both an original stream (real stderr/stdout) and a log
+    file simultaneously. Direct request: this client should write its
+    own persistent log so a real run doesn't need manual `| tee
+    verify.log` shell redirection every time. Wrapping sys.stderr/
+    sys.stdout at the entry point this way, rather than adding a
+    separate log call to every individual print(..., file=sys.stderr)
+    site across the whole file, means every one of those existing
+    calls gets captured automatically with zero changes needed to any
+    of them -- including ones in functions that run before this class
+    even exists in the call stack (warm_up_local_model, run_category,
+    the interrupt handler), since they all reference sys.stderr at
+    call time, not at their own definition time.
+    """
+    def __init__(self, original, log_file):
+        self._original = original
+        self._log_file = log_file
+
+    def write(self, data):
+        self._original.write(data)
+        try:
+            self._log_file.write(data)
+            self._log_file.flush()  # so a live `tail -f` sees real-time content, not just on close
+        except (ValueError, OSError):
+            pass  # best-effort -- a closed/broken log file must never take down real console output
+
+    def flush(self):
+        self._original.flush()
+        try:
+            self._log_file.flush()
+        except (ValueError, OSError):
+            pass
+
+    def isatty(self):
+        return self._original.isatty()
+
+
 def main() -> int:
     base_url = os.environ.get("OPENCODE_SERVER_URL", "http://server:4096")
     # 4096 is THIS project's chosen fixed port, set explicitly when
@@ -1300,7 +1363,16 @@ def main() -> int:
         ladder = json.load(f)
 
     setup_message = ladder["setup_turn"]
-    model_slug = f"{provider}_{model_id.replace(':', '-').replace('/', '-')}"
+    # Confirmed live: provider ("local/ollama") has its own embedded "/"
+    # that was never sanitized here, only model_id's was -- this
+    # silently created a real nested directory (RESULTS_DIR/local/ollama_...,
+    # not the intended flat RESULTS_DIR/local-ollama_...) via pathlib's
+    # normal "/" path-separator interpretation. The rotation logic below
+    # then re-appended this same slash-containing model_slug onto
+    # results_dir.parent (already one level INTO that same nested path),
+    # doubling the "local" segment -- exactly the corrupted rotation
+    # path observed live: ".../local/local/ollama_....<timestamp>".
+    model_slug = f"{provider.replace('/', '-')}_{model_id.replace(':', '-').replace('/', '-')}"
     results_dir = RESULTS_DIR / model_slug
 
     # Rotate a previous run's results before overwriting -- confirmed
@@ -1328,6 +1400,19 @@ def main() -> int:
 
     results_dir.mkdir(parents=True, exist_ok=True)
     _CURRENT_RUN_STATE["results_dir"] = results_dir
+
+    # Confirmed direct request: write a persistent log of this run
+    # automatically, so `docker-compose run ... | tee verify.log`
+    # shell redirection isn't something the user needs to remember
+    # every time. eval_client.log lives alongside the other per-run
+    # artifacts (tier*.json, report.json) -- a distinct file from
+    # server.log.interrupted (that one is opencode's OWN server log,
+    # copied out; this one is this SCRIPT's own console output).
+    eval_log_path = results_dir / "eval_client.log"
+    eval_log_file = eval_log_path.open("a", encoding="utf-8")
+    sys.stderr = _TeeStream(sys.stderr, eval_log_file)
+    sys.stdout = _TeeStream(sys.stdout, eval_log_file)
+    print(f"[eval-client] writing this run's own log to {eval_log_path}", file=sys.stderr)
 
     print(f"[eval-client] target server: {base_url}", file=sys.stderr)
     print(f"[eval-client] model under test: {provider}/{model_id}", file=sys.stderr)
