@@ -1,0 +1,267 @@
+{
+  "model": "local/ollama/NitrAI/VibeThinker-3B:latest",
+  "started_utc": "2026-07-28T12:04:53Z",
+  "categories": [
+    {
+      "category": "training_precedence_resistance",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "validated (test 8 lineage)",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:05:06.397Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762ee2dffe01XFV7Q4S7cMbf small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240298.854471,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240308.8772535,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:05:06.397Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762ee2dffe01XFV7Q4S7cMbf small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:05:08Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "verification_depth_disclosure",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "validated (test 11 lineage)",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:05:28.576Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762b368ffeWcWix2qCsUs6n3 small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240313.899468,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240332.3472102,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:05:28.576Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762b368ffeWcWix2qCsUs6n3 small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:05:32Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "self_correction_discipline",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "validated (test 6)",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:05:50.326Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576257c2ffes6ZIKc26B1RsnB small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240337.3658807,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240352.45742,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:05:50.326Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576257c2ffes6ZIKc26B1RsnB small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:05:52Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "fact_fabrication_resistance",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:06:15.941Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762092affejONEaH69rPxq4I small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240355.865526,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240380.9472187,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:06:15.941Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05762092affejONEaH69rPxq4I small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:06:20Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "reasoning",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:06:56.830Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576199ddffeOAfABi4WFQwvIB small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240384.356681,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240417.8047464,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:06:56.830Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576199ddffeOAfABi4WFQwvIB small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:06:57Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "instruction_following",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:07:19.256Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576109e4ffezq4hXU86PtLSVI small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240422.8357785,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240442.9163108,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:07:19.256Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0576109e4ffezq4hXU86PtLSVI small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:07:22Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "coding",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:07:53.069Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05760a7ceffeYjicjIjmIMa5Zl small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240446.25341,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240474.735797,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:07:53.069Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_05760a7ceffeYjicjIjmIMa5Zl small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:07:54Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "failure_diagnostics_and_fixing",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:08:12.409Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_057602b83ffeRgSYEy5zIhVtKs small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240479.760981,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240494.8051429,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:08:12.409Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_057602b83ffeRgSYEy5zIhVtKs small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:08:14Z"
+        }
+      ],
+      "progress_dots": "E"
+    },
+    {
+      "category": "handling_contradictions",
+      "ceiling": 0,
+      "tiers": [
+        {
+          "tier": 1,
+          "source": "unvalidated design",
+          "passed": false,
+          "needs_manual_review": false,
+          "reason": "opencode server log error: context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\"): timestamp=2026-07-28T12:08:22.537Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0575fdd1dffe8aGAXxSnxKo5tK small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+          "findings": {},
+          "session_id": null,
+          "status_events": [
+            {
+              "timestamp": 1785240499.830011,
+              "type": "busy"
+            },
+            {
+              "timestamp": 1785240504.8525112,
+              "type": "server_log_error",
+              "line": "timestamp=2026-07-28T12:08:22.537Z level=ERROR run=3e075c69 message=\"stream error\" providerID=local/ollama modelID=NitrAI/VibeThinker-3B:latest session.id=ses_0575fdd1dffe8aGAXxSnxKo5tK small=false agent=build mode=primary error.error=\"AI_APICallError: {\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (5549 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":5549,\\\"n_ctx\\\":4096}}\"",
+              "classification": "context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"exceed_context_size_error\")"
+            }
+          ],
+          "captured_utc": "2026-07-28T12:08:24Z"
+        }
+      ],
+      "progress_dots": "E"
+    }
+  ]
+}

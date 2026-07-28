@@ -1336,6 +1336,40 @@ class _TeeStream:
         return self._original.isatty()
 
 
+def _summary_note_for_category(cat_report: dict) -> str:
+    """Returns the "[stopped: ...]" suffix for one category's summary
+    line, or "" if its last tier passed. Extracted out of main()'s own
+    summary loop so this classification is directly unit-testable --
+    confirmed live (a real run, all 9 categories, a genuine
+    context-overflow error) that a gap here silently mislabels an
+    entire run's worth of categories, which is exactly the kind of
+    thing worth a permanent regression test against real captured data
+    rather than only inline, throwaway verification.
+    """
+    tiers = cat_report.get("tiers") or []
+    last_tier = tiers[-1] if tiers else None
+    if not last_tier or last_tier["passed"]:
+        return ""
+    if last_tier.get("needs_manual_review"):
+        return " [stopped: NEEDS MANUAL REVIEW]"
+    reason = last_tier.get("reason", "")
+    if reason.startswith("quota/rate-limit exhausted"):
+        wait_min = last_tier.get("quota_wait_seconds", 0) / 60
+        return f" [stopped: QUOTA -- next opencode attempt in ~{wait_min:.0f}min, gave up waiting]"
+    if reason.startswith("opencode server log error"):
+        # Confirmed live: a real run where every tier failed via this
+        # exact path (all 9 categories, a genuine context-overflow
+        # error) previously printed the misleading "[stopped: CVV
+        # violation]" for every one of them -- this reason format
+        # (added alongside the server-log-error detection itself) was
+        # never added to this classification, so nothing matched and
+        # it silently fell through to the generic fallback.
+        return " [stopped: SERVER ERROR]"
+    if reason.startswith("HTTP/request error"):
+        return " [stopped: ERROR]"
+    return " [stopped: CVV violation]"
+
+
 def main() -> int:
     base_url = os.environ.get("OPENCODE_SERVER_URL", "http://server:4096")
     # 4096 is THIS project's chosen fixed port, set explicitly when
@@ -1474,18 +1508,7 @@ def main() -> int:
 
     print(f"\n=== Summary (model: {provider}/{model_id}) ===", file=sys.stderr)
     for cat_report in report["categories"]:
-        last_tier = cat_report["tiers"][-1] if cat_report["tiers"] else None
-        note = ""
-        if last_tier and not last_tier["passed"]:
-            if last_tier.get("needs_manual_review"):
-                note = " [stopped: NEEDS MANUAL REVIEW]"
-            elif last_tier.get("reason", "").startswith("quota/rate-limit exhausted"):
-                wait_min = last_tier.get("quota_wait_seconds", 0) / 60
-                note = f" [stopped: QUOTA -- next opencode attempt in ~{wait_min:.0f}min, gave up waiting]"
-            elif last_tier.get("reason", "").startswith("HTTP/request error"):
-                note = " [stopped: ERROR]"
-            else:
-                note = " [stopped: CVV violation]"
+        note = _summary_note_for_category(cat_report)
         print(f"  {cat_report['category']}: ceiling tier {cat_report['ceiling']}{note}", file=sys.stderr)
 
     # Compact grid, all categories aligned -- the "at a glance, what
