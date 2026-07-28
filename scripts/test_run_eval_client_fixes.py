@@ -28,6 +28,7 @@ Usage:
     python3 scripts/test_run_eval_client_fixes.py
 """
 import io
+import re
 import sys
 import tempfile
 import time
@@ -93,6 +94,55 @@ class WarmUpFailureMessageWordingTests(unittest.TestCase):
         self.assertTrue(line.startswith("[eval-client] warm-up failed ("))
         self.assertNotIn("hard timeout", line)
         self.assertNotIn("600s", line)
+
+
+class CentralizedLogHelperTests(unittest.TestCase):
+    """Direct request: worth improving "[eval-client]" + timestamp.
+    Several rounds of hotfixes each found individual print(f"[eval-
+    client] ...") sites with no timestamp at all, one at a time -- this
+    centralizes it so a new line gets one automatically, rather than
+    depending on remembering to add one each time.
+    """
+
+    def test_every_line_gets_tag_and_timestamp(self):
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            r._log("something happened")
+        line = buf.getvalue().strip()
+        self.assertTrue(line.startswith("[eval-client] something happened ("))
+        self.assertTrue(line.endswith(")"))
+        # A real ISO8601 UTC timestamp should be present inside the parens.
+        self.assertRegex(line, r"\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\)$")
+
+    def test_no_remaining_untimestamped_eval_client_print_sites(self):
+        # Regression guard against the exact class of gap this was
+        # built to close: every direct print(f"[eval-client] ...")
+        # call left in the file must be one of the deliberately-
+        # excluded ones (already computes its own timestamp, or builds
+        # an incremental single line with end="") -- not a silently
+        # untimestamped new one creeping back in later.
+        source = Path(r.__file__).read_text()
+        deliberately_excluded_line_markers = (
+            'print(f"[eval-client] status changed:',
+            'print(f"[eval-client] still waiting on retry',
+            'print(f"[eval-client] category: {cat_id}:',
+            'print(f"[eval-client] ollama /api/ps',
+            'print(f"[eval-client] {msg}',  # _log() itself -- the timestamp mechanism
+        )
+        in_docstring = False
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.count('"""') % 2 == 1:
+                in_docstring = not in_docstring
+                continue
+            if in_docstring:
+                continue
+            if 'print(f"[eval-client]' in line or "print(f'[eval-client]" in line:
+                self.assertTrue(
+                    any(marker in line for marker in deliberately_excluded_line_markers),
+                    f"found a direct print(...) eval-client line not in the deliberately-"
+                    f"excluded list -- should this use _log() instead? line: {line!r}",
+                )
 
 
 class ModelSlugPathTests(unittest.TestCase):

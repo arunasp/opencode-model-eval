@@ -79,6 +79,31 @@ TOOLS_DIR = Path("/opt/harness/tools")
 # directory of rotated files (at least as of the version tested).
 OPENCODE_LOG_PATH = Path("/home/harness/.local/share/opencode/log/opencode.log")
 
+
+def _log(msg: str) -> None:
+    """Prints one [eval-client] line to stderr with a wall-clock UTC
+    timestamp, always. Direct request: worth improving "[eval-client]"
+    + timestamp -- several rounds of hotfixes each found individual
+    print(f"[eval-client] ...") sites that had no timestamp at all,
+    one at a time (category lines, then polling-loop status lines,
+    then still more found later). Centralizing here instead of
+    continuing to patch print sites ad hoc means a new [eval-client]
+    line added in the future gets a timestamp automatically just by
+    using this instead of a bare print() -- the class of bug (not just
+    this specific instance of it) is what's fixed.
+
+    Lines that already computed their own timestamp for a reason
+    beyond just "when was this printed" (category start/end -- also
+    used to measure the gap between them; the tier-progress lines
+    inside run_category(), which build up one line incrementally with
+    end="") are deliberately left as direct print() calls rather than
+    converted to this -- they're already covered, and forcing them
+    through a one-line-at-a-time helper would break the incremental
+    single-line building those specifically rely on.
+    """
+    print(f"[eval-client] {msg} ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())})", file=sys.stderr)
+
+
 # Quota/rate-limit awareness config -- all tunable via env var, no
 # hardcoded provider-specific knowledge (NVIDIA vs Zen vs anything
 # else). opencode's own retry.ts already translates provider-specific
@@ -1090,9 +1115,9 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
     """
     if provider != "local/ollama":
         return
-    print(f"[eval-client] warming up {provider}/{model_id} before the test ladder "
-          f"(hard timeout {WARMUP_TIMEOUT_S:.0f}s -- Ollama cold-start on a large "
-          f"model can take a while)...", file=sys.stderr)
+    _log(f"warming up {provider}/{model_id} before the test ladder "
+         f"(hard timeout {WARMUP_TIMEOUT_S:.0f}s -- Ollama cold-start on a large "
+         f"model can take a while)...")
 
     done_event = threading.Event()
     poller = threading.Thread(
@@ -1119,12 +1144,12 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
         _, quota_info, _ = quota_aware_send_message(
             base_url, session_id, provider, model_id, "hi", timeout=int(WARMUP_TIMEOUT_S))
         if quota_info is not None:
-            print(f"[eval-client] warm-up bailed out early ({quota_info.get('kind', 'quota')}): "
-                  f"{quota_info.get('message', quota_info)} -- proceeding to the real test ladder "
-                  f"anyway, which will surface the same problem with proper category/tier context "
-                  f"if it's genuine", file=sys.stderr)
+            _log(f"warm-up bailed out early ({quota_info.get('kind', 'quota')}): "
+                 f"{quota_info.get('message', quota_info)} -- proceeding to the real test ladder "
+                 f"anyway, which will surface the same problem with proper category/tier context "
+                 f"if it's genuine")
         else:
-            print("[eval-client] warm-up complete", file=sys.stderr)
+            _log("warm-up complete")
     except RuntimeError as e:
         # Confirmed live: this message previously always claimed "at
         # the {WARMUP_TIMEOUT_S}s hard timeout" regardless of what
@@ -1135,14 +1160,13 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
         # sent anyone reading it looking for a slow-response problem
         # that was never real.
         if "timed out after" in str(e):
-            print(f"[eval-client] warm-up timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
-                  f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
-                  f"surface the same problem with proper category/tier context if it's genuine",
-                  file=sys.stderr)
+            _log(f"warm-up timed out at the {WARMUP_TIMEOUT_S:.0f}s hard "
+                 f"timeout ({e}) -- proceeding to the real test ladder anyway, which will "
+                 f"surface the same problem with proper category/tier context if it's genuine")
         else:
-            print(f"[eval-client] warm-up failed ({e}) -- proceeding to the real test ladder "
-                  f"anyway, which will surface the same problem with proper category/tier "
-                  f"context if it's genuine", file=sys.stderr)
+            _log(f"warm-up failed ({e}) -- proceeding to the real test ladder "
+                 f"anyway, which will surface the same problem with proper category/tier "
+                 f"context if it's genuine")
     finally:
         done_event.set()
         poller.join(timeout=5)
@@ -1177,28 +1201,25 @@ def unload_local_model(ollama_base_url: str, model_id: str,
     already done, so nothing downstream depends on it succeeding --
     any failure is logged, never raised.
     """
-    print(f"[eval-client] unloading {model_id} from Ollama (hard timeout {timeout_s:.0f}s)...",
-          file=sys.stderr)
+    _log(f"unloading {model_id} from Ollama (hard timeout {timeout_s:.0f}s)...")
     try:
         body = json.dumps({"model": model_id, "keep_alive": 0}).encode("utf-8")
         req = urllib.request.Request(f"{ollama_base_url}/api/generate", data=body,
                                       headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=10).read()
     except Exception as e:
-        print(f"[eval-client] unload request failed ({e}) -- Ollama's own keep-alive "
-              f"will still expire it eventually", file=sys.stderr)
+        _log(f"unload request failed ({e}) -- Ollama's own keep-alive will still expire it eventually")
         return
 
     start = time.time()
     while time.time() - start < timeout_s:
         if _ollama_model_entry(model_id, ollama_ps(ollama_base_url)) is None:
-            print(f"[eval-client] unload confirmed after {time.time() - start:.0f}s", file=sys.stderr)
+            _log(f"unload confirmed after {time.time() - start:.0f}s")
             return
-        print(f"[eval-client] still unloading (elapsed {time.time() - start:.0f}s)...", file=sys.stderr)
+        _log(f"still unloading (elapsed {time.time() - start:.0f}s)...")
         time.sleep(poll_interval_s)
-    print(f"[eval-client] unload not confirmed within the {timeout_s:.0f}s hard timeout -- "
-          f"giving up the wait (Ollama's own keep-alive will still expire it eventually)",
-          file=sys.stderr)
+    _log(f"unload not confirmed within the {timeout_s:.0f}s hard timeout -- "
+         f"giving up the wait (Ollama's own keep-alive will still expire it eventually)")
 
 
 # Confirmed live: hitting Ctrl-C during a run raises KeyboardInterrupt
@@ -1245,18 +1266,19 @@ def _handle_interrupt(signum: int, frame) -> None:
     _INTERRUPT_HANDLING = True
 
     sig_name = signal.Signals(signum).name
-    print(f"\n[eval-client] {sig_name} received -- best-effort cleanup before exiting "
-          f"(session abort + local model unload if applicable, both short-timeout so this "
-          f"doesn't hang)...", file=sys.stderr)
+    print(file=sys.stderr)  # blank line for spacing, ahead of the tagged/timestamped message below
+    _log(f"{sig_name} received -- best-effort cleanup before exiting "
+         f"(session abort + local model unload if applicable, both short-timeout so this "
+         f"doesn't hang)...")
 
     base_url = _CURRENT_RUN_STATE["base_url"]
     session_id = _CURRENT_RUN_STATE["session_id"]
     if base_url and session_id:
         try:
             abort_session(base_url, session_id)
-            print(f"[eval-client] aborted in-flight session {session_id}", file=sys.stderr)
+            _log(f"aborted in-flight session {session_id}")
         except Exception as e:
-            print(f"[eval-client] session abort on interrupt failed (non-fatal): {e}", file=sys.stderr)
+            _log(f"session abort on interrupt failed (non-fatal): {e}")
 
     provider = _CURRENT_RUN_STATE["provider"]
     model_id = _CURRENT_RUN_STATE["model_id"]
@@ -1273,7 +1295,7 @@ def _handle_interrupt(signum: int, frame) -> None:
             # keep_alive will still expire it soon regardless.
             unload_local_model(OLLAMA_BASE_URL, model_id, timeout_s=5)
         except Exception as e:
-            print(f"[eval-client] model unload on interrupt failed (non-fatal): {e}", file=sys.stderr)
+            _log(f"model unload on interrupt failed (non-fatal): {e}")
 
     # Confirmed live: an interrupted run previously left ZERO diagnostic
     # artifacts behind -- results/logs/ is only ever written by
@@ -1296,14 +1318,11 @@ def _handle_interrupt(signum: int, frame) -> None:
                 (results_dir / "server.log.interrupted").write_text(
                     OPENCODE_LOG_PATH.read_text(errors="replace")
                 )
-                print(f"[eval-client] captured (unfiltered) server log to "
-                      f"{results_dir / 'server.log.interrupted'}", file=sys.stderr)
+                _log(f"captured (unfiltered) server log to {results_dir / 'server.log.interrupted'}")
             else:
-                print(f"[eval-client] NOTE: {OPENCODE_LOG_PATH} not found -- "
-                      "no server log to capture on interrupt", file=sys.stderr)
+                _log(f"NOTE: {OPENCODE_LOG_PATH} not found -- no server log to capture on interrupt")
         except OSError as e:
-            print(f"[eval-client] server log capture on interrupt failed (non-fatal): {e}",
-                  file=sys.stderr)
+            _log(f"server log capture on interrupt failed (non-fatal): {e}")
 
     sys.exit(130)  # 128 + SIGINT(2), the conventional exit code for this -- matches what was already observed
 
@@ -1441,8 +1460,7 @@ def main() -> int:
     # inventing a different convention.
     if results_dir.exists() and any(results_dir.iterdir()):
         rotated_dir = results_dir.parent / f"{model_slug}.{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
-        print(f"[eval-client] previous results at {results_dir} found -- rotating to {rotated_dir}",
-              file=sys.stderr)
+        _log(f"previous results at {results_dir} found -- rotating to {rotated_dir}")
         shutil.move(str(results_dir), str(rotated_dir))
 
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -1459,10 +1477,10 @@ def main() -> int:
     eval_log_file = eval_log_path.open("a", encoding="utf-8")
     sys.stderr = _TeeStream(sys.stderr, eval_log_file)
     sys.stdout = _TeeStream(sys.stdout, eval_log_file)
-    print(f"[eval-client] writing this run's own log to {eval_log_path}", file=sys.stderr)
+    _log(f"writing this run's own log to {eval_log_path}")
 
-    print(f"[eval-client] target server: {base_url}", file=sys.stderr)
-    print(f"[eval-client] model under test: {provider}/{model_id}", file=sys.stderr)
+    _log(f"target server: {base_url}")
+    _log(f"model under test: {provider}/{model_id}")
 
     warm_up_local_model(base_url, provider, model_id)
 
@@ -1509,15 +1527,13 @@ def main() -> int:
             filtered_log = filter_log_by_identifiers(full_log, log_identifiers)
             (results_dir / "server.log").write_text(filtered_log)
         else:
-            print(f"[eval-client] NOTE: {OPENCODE_LOG_PATH} not found -- "
-                  "server.log artifact not captured. Confirm the opencode-log "
-                  "volume is mounted (see docker-compose.yml/terraform).",
-                  file=sys.stderr)
+            _log(f"NOTE: {OPENCODE_LOG_PATH} not found -- server.log artifact not captured. "
+                 f"Confirm the opencode-log volume is mounted (see docker-compose.yml/terraform).")
     except OSError as e:
         # Never let a log-capture failure take down an otherwise-
         # successful run -- this is a nice-to-have artifact, not
         # something the eval run's actual correctness depends on.
-        print(f"[eval-client] NOTE: failed to capture server.log: {e}", file=sys.stderr)
+        _log(f"NOTE: failed to capture server.log: {e}")
 
     print(f"\n=== Summary (model: {provider}/{model_id}) ===", file=sys.stderr)
     for cat_report in report["categories"]:
