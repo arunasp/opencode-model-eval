@@ -40,7 +40,7 @@ class QuotaAwareSendMessageTests(unittest.TestCase):
         rec.create_session = self._orig_create_session
 
     def test_normal_completion_returns_no_quota_info(self):
-        rec.send_message = lambda base_url, sid, p, m, t: {
+        rec.send_message = lambda base_url, sid, p, m, t, **kwargs: {
             "parts": [{"type": "text", "text": "a normal reply"}]
         }
         rec.get_session_status = lambda base_url, sid: {"type": "idle"}
@@ -54,7 +54,7 @@ class QuotaAwareSendMessageTests(unittest.TestCase):
     def test_quota_exhaustion_aborts_and_reports_cleanly(self):
         release_worker = threading.Event()
 
-        def blocking_send_message(base_url, sid, p, m, t):
+        def blocking_send_message(base_url, sid, p, m, t, **kwargs):
             release_worker.wait(timeout=10)
             return {"parts": [{"type": "text", "text": "should never be used"}]}
 
@@ -93,7 +93,7 @@ class QuotaAwareSendMessageTests(unittest.TestCase):
     def test_short_retry_under_threshold_waits_patiently_no_abort(self):
         release_worker = threading.Event()
 
-        def delayed_send_message(base_url, sid, p, m, t):
+        def delayed_send_message(base_url, sid, p, m, t, **kwargs):
             release_worker.wait(timeout=5)
             return {"parts": [{"type": "text", "text": "succeeded after internal retry"}]}
 
@@ -149,7 +149,7 @@ class RunCategoryQuotaIntegrationTests(unittest.TestCase):
         rec.create_session = lambda base_url: "fake-session"
 
         release_worker = threading.Event()
-        rec.send_message = lambda base_url, sid, p, m, t: (
+        rec.send_message = lambda base_url, sid, p, m, t, **kwargs: (
             release_worker.wait(timeout=10) or {"parts": []}
         )
 
@@ -201,7 +201,7 @@ class RunCategoryQuotaIntegrationTests(unittest.TestCase):
 
         responses = []
 
-        def fake_send_message(base_url, sid, p, m, t):
+        def fake_send_message(base_url, sid, p, m, t, **kwargs):
             behavior = responses.pop(0)
             if behavior == "error":
                 raise RuntimeError("simulated network error")
