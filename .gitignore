@@ -41,3 +41,7 @@ terraform/*-plan.log
 # Python cache
 __pycache__/
 *.pyc
+
+# Machine-specific compose environment. .env.example is committed as the
+# template; .env holds an absolute path for one machine and must not be.
+.env
