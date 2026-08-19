@@ -1,4 +1,37 @@
+# Bind-mount sources go through ${HARNESS_ROOT:-.} rather than a bare
+# `./`, because compose resolves a relative source against the project
+# directory as seen by whichever process builds the command -- and that
+# is not always the daemon's view of the filesystem. Confirmed live:
+# driven from cicd_runner's coordinator, `./auth-data/auth.json` became
+# `/dynamic-root/opencode/opencode-model-eval/auth-data/auth.json`, a
+# path that exists only inside that container. The daemon then created
+# an empty directory tree at the host root and the server crash-looped
+# on "credentials not found" -- the same phantom-directory failure
+# terraform/main.tf already documents for a missing bind source.
+#
+# The default is `.`, so a shell invocation behaves exactly as before.
+# Only something driving compose from elsewhere needs to set it, in
+# .env, to this directory's absolute host path.
+#
+# Derive that value with `pwd`, never `realpath` or `readlink -f`. The
+# same file is resolved in three other places -- the extraction scripts
+# (`cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` plus a literal `/../`),
+# Terraform's `abspath()`, and here -- and none of those resolve
+# symlinks. A resolved path that disagrees with them is a different
+# mount-source string for the same inode, which shows up as Terraform
+# drift and a container recreated on every plan. No component of the
+# path is a symlink today; this keeps that from mattering if one ever is.
 x-harness-defaults: &harness-defaults
+  # One-shot roles. A service carrying a profile is not started by a bare
+  # `docker compose up -d`, which is exactly the command an orchestrator
+  # constructs: cicd_runner's container_control takes a directory and an
+  # action and appends nothing from the caller, deliberately, so that it
+  # stays reusable across projects that it knows nothing about. Scoping
+  # what "up" means is therefore this file's job, not the runner's.
+  # Naming a service explicitly (`up -d discover`, `run --rm eval`, as
+  # every Makefile target here does) enables its profile on the spot, so
+  # nothing at a shell changes.
+  profiles: ["oneshot"]
   # Explicit image name, matching what terraform/main.tf already declares
   # for the same stage. Without it Compose derives one from the project
   # directory and the service name, which is why discover/eval/
@@ -106,7 +139,7 @@ services:
       OPENCODE_SESSION_TTL_S: "${OPENCODE_SESSION_TTL_S:-3600}"
       OPENCODE_REAPER_POLL_INTERVAL_S: "${OPENCODE_REAPER_POLL_INTERVAL_S:-120}"
     volumes:
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ${HARNESS_ROOT:-.}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
       # declarations, merged UNDER this project's own OPENCODE_CONFIG
       # (confirmed via source: config.ts's loadGlobal() always loads this
@@ -146,7 +179,7 @@ services:
     # generally).
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ${HARNESS_ROOT:-.}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
       # declarations, merged UNDER this project's own OPENCODE_CONFIG
       # (confirmed via source: config.ts's loadGlobal() always loads this
@@ -162,7 +195,7 @@ services:
       # always expands $HOME correctly) to hand compose an already-resolved
       # absolute path than to trust compose's own expansion of `~`.
       - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
-      - ./results:/results
+      - ${HARNESS_ROOT:-.}/results:/results
       # Read-write, not read-only: `opencode models --verbose` here is
       # a raw CLI invocation (not a request to the persistent server),
       # and the opencode CLI writes its own log file on ANY invocation,
@@ -217,8 +250,8 @@ services:
       OPENCODE_MODEL_PROVIDER: ${OPENCODE_MODEL_PROVIDER:-}
       OPENCODE_MODEL_ID: ${OPENCODE_MODEL_ID:-}
     volumes:
-      - ./task-suite:/task-suite:ro
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ${HARNESS_ROOT:-.}/task-suite:/task-suite:ro
+      - ${HARNESS_ROOT:-.}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
       # declarations, merged UNDER this project's own OPENCODE_CONFIG
       # (confirmed via source: config.ts's loadGlobal() always loads this
@@ -234,7 +267,7 @@ services:
       # always expands $HOME correctly) to hand compose an already-resolved
       # absolute path than to trust compose's own expansion of `~`.
       - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
-      - ./results:/results
+      - ${HARNESS_ROOT:-.}/results:/results
       - opencode-log:/home/harness/.local/share/opencode/log:ro
 
   # One-shot container for tasks that genuinely need git (e.g. cloning
@@ -275,7 +308,7 @@ services:
     ports:
       - "${GIT_WORKSPACE_PORT:-49606}:4096"
     volumes:
-      - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
+      - ${HARNESS_ROOT:-.}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
       # declarations, merged UNDER this project's own OPENCODE_CONFIG
       # (confirmed via source: config.ts's loadGlobal() always loads this
@@ -305,6 +338,11 @@ services:
   # nobody needs to browse directly, but wrong for notebooks someone
   # actually wants to find, open, or back up on the host.
   jupyter:
+    # Long-running, but not part of the default stack: an eval run does
+    # not need it, and a bare `up -d` should not start an authoring
+    # server nobody asked for. `make jupyter-up` names it explicitly and
+    # is unaffected.
+    profiles: ["jupyter"]
     image: opencode-model-eval-jupyter:latest
     container_name: opencode-model-eval-jupyter
     ulimits:
@@ -326,7 +364,7 @@ services:
     ports:
       - "${JUPYTER_PORT:-8888}:8888"
     volumes:
-      - ./notebooks:/notebooks
+      - ${HARNESS_ROOT:-.}/notebooks:/notebooks
     restart: unless-stopped
 
 # Shared between server (rw) and every client container (ro) -- lets

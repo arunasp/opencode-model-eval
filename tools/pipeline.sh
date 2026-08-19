@@ -264,6 +264,39 @@ stage_verify() {
     rc=1
   fi
 
+  # Bind sources must not be bare-relative. Compose resolves them against
+  # the project directory as seen by whichever process builds the
+  # command, and an orchestrator's view is not the daemon's -- confirmed
+  # live, where `./auth-data/auth.json` became a /dynamic-root path and
+  # the daemon created an empty directory tree at the host root instead
+  # of failing. Every source goes through ${HARNESS_ROOT:-.}.
+  local bare_relative
+  bare_relative="$(grep -nE '^[[:space:]]*- \./' docker-compose.yml || true)"
+  if [ -n "$bare_relative" ]; then
+    log "bind sources bypassing HARNESS_ROOT:"
+    log "$bare_relative"
+    rc=1
+  else
+    log "every compose bind source goes through HARNESS_ROOT"
+  fi
+
+  # When it is set, it has to name this directory. A stale value from a
+  # moved or copied checkout points the mounts somewhere real and wrong,
+  # which is worse than pointing them somewhere missing.
+  if [ -n "${HARNESS_ROOT:-}" ]; then
+    local declared actual
+    declared="$(cd "$HARNESS_ROOT" 2>/dev/null && pwd || echo '<unreadable>')"
+    actual="$(pwd)"
+    if [ "$declared" = "$actual" ]; then
+      log "HARNESS_ROOT resolves to this directory"
+    else
+      log "HARNESS_ROOT is '$HARNESS_ROOT' -> '$declared', but this directory is '$actual'"
+      rc=1
+    fi
+  else
+    log "HARNESS_ROOT unset (correct for shell use; required for an orchestrator)"
+  fi
+
   # A mode-only diff blocks a later checkout of that path, so it should
   # never survive into a commit. restore_exec_bits() handles the common
   # direction automatically; what reaches here is the other one -- a file
