@@ -264,6 +264,37 @@ stage_verify() {
     rc=1
   fi
 
+  # This repository is public, so a real host path or local username in a
+  # tracked file is a permanent disclosure -- worse than the drift a
+  # mismatched path causes, because rewriting published history is the
+  # only way back. Container-internal paths under /home/harness and
+  # /home/worker are legitimate and allowed; anything else naming a home
+  # directory is a leak.
+  #
+  # This is also why HARNESS_ROOT lives in .env rather than in the
+  # compose file: the one place the absolute path is genuinely needed is
+  # the one file that is never committed.
+  local path_leaks
+  path_leaks="$(git grep -nE '/(home|Users)/[a-zA-Z0-9_.-]+' -- . 2>/dev/null \
+    | grep -vE '/(home)/(harness|worker|YOUR_USER)([/"'"'"':[:space:]]|$)' || true)"
+  if [ -n "$path_leaks" ]; then
+    log "host paths in tracked files (this repo is public):"
+    log "$path_leaks"
+    rc=1
+  else
+    log "no host paths or local usernames in tracked files"
+  fi
+
+  # A note, not a failure: the development host's name is already in the
+  # published history in a number of files, so failing on it would just
+  # keep the stage red without removing anything. Reported so new ones
+  # are visible as they appear.
+  local host_names
+  host_names="$(git grep -clE 'Cyberdyne' -- . 2>/dev/null | wc -l)"
+  if [ "$host_names" -gt 0 ]; then
+    log "note: development host name appears in $host_names tracked file(s) (pre-existing, already published)"
+  fi
+
   # Bind sources must not be bare-relative. Compose resolves them against
   # the project directory as seen by whichever process builds the
   # command, and an orchestrator's view is not the daemon's -- confirmed

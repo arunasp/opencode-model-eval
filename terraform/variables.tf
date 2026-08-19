@@ -17,7 +17,7 @@ variable "opencode_ref" {
 }
 
 variable "host_uid" {
-  description = "uid every container runs as, passed both as a build arg (baking a matching passwd entry into the image) and as WORKER_UID at runtime (read by entrypoint.sh, which drops privileges before exec'ing anything). Without it the containers run as root and everything they write to a bind-mounted host path -- results/, notebooks/ -- is left root-owned. Compose reads the same value from HOST_UID; Terraform has no equivalent of the Makefile's `id -u`, so this default has to be stated. 1000 is the observed uid on Cyberdyne."
+  description = "uid every container runs as, passed both as a build arg (baking a matching passwd entry into the image) and as WORKER_UID at runtime (read by entrypoint.sh, which drops privileges before exec'ing anything). Without it the containers run as root and everything they write to a bind-mounted host path -- results/, notebooks/ -- is left root-owned. Compose reads the same value from HOST_UID; Terraform has no equivalent of the Makefile's `id -u`, so this default has to be stated. 1000 is the first non-system uid on most Linux installs, which makes it right on a single-user machine and worth overriding anywhere else."
   type        = number
   default     = 1000
 }
@@ -29,7 +29,7 @@ variable "host_gid" {
 }
 
 variable "container_nproc_limit" {
-  description = "nproc ulimit applied to every container. RLIMIT_NPROC is enforced per real uid system-wide rather than per container, and this daemon's own default was measured at 128:256 -- low enough that every exec following entrypoint.sh's uid switch fails with EAGAIN (`Resource temporarily unavailable`) for any binary. This is a prerequisite of the privilege drop, not a tuning knob; cicd_runner passes the same 8192 to every worker for the same reason."
+  description = "nproc ulimit applied to every container. RLIMIT_NPROC is enforced per real uid system-wide rather than per container, and the daemon default was measured at 128:256 on the development host -- low enough that every exec following entrypoint.sh's uid switch fails with EAGAIN (`Resource temporarily unavailable`) for any binary. This is a prerequisite of the privilege drop, not a tuning knob; cicd_runner passes the same 8192 to every worker for the same reason."
   type        = number
   default     = 8192
 }
