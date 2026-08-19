@@ -38,6 +38,16 @@ network-reachable, or run with full/unrestricted egress. This test
 uses a hard subprocess timeout specifically so a repeat of that
 failure mode fails loudly and fast instead of hanging your CI.
 
+SECOND, DISTINCT CAUSE confirmed live (2026-08-19, cicd-runner): a
+cold run (fresh npm cache, first invocation on a new worker) can push
+session creation past SESSION_REQUEST_TIMEOUT_S on genuine startup
+jitter alone, with opencode.ai fully reachable throughout (confirmed
+via a direct TCP check at the time of the failure) -- an immediate
+re-run with a warm npm cache passed cleanly. A single failing run does
+not distinguish this from the network-block cause above; check
+reachability directly (cheap), and note whether this was the
+environment's first invocation, before concluding which applies.
+
 Usage:
     python3 scripts/test_run_eval_client_e2e.py
     (skips with a clear message if node/npm aren't on PATH)
@@ -62,8 +72,21 @@ OPENCODE_VERSION = "1.18.3"  # matches the version the original empirical
                               # claim in run_eval_client.py's docstring
                               # was made against
 SERVER_STARTUP_TIMEOUT_S = 15
-SESSION_REQUEST_TIMEOUT_S = 20  # generous, but bounded -- see module
-                                  # docstring's KNOWN ENVIRONMENT LIMITATION
+# Confirmed live via cicd-runner (2026-08-19): a cold run (fresh npm
+# cache, first invocation on a new worker) took 37.966s wall-clock for
+# both tests and failed the second one at exactly this deadline, with
+# opencode.ai confirmed REACHABLE the whole time (direct TCP check) --
+# a genuinely different cause than the module docstring's originally-
+# documented network-block hypothesis, which was written in a more
+# network-restricted sandbox. An immediate re-run (warm npm cache) hit
+# 12.126s for both and passed cleanly. 30s (was 20s) gives real
+# cold-start headroom without masking the case this test actually
+# exists to catch -- a genuine indefinite hang still exceeds any finite
+# bound. Both causes (network block, cold-start timing) remain live
+# possibilities on a real failure; check reachability first (fast to
+# rule out), then consider whether this was the environment's first
+# invocation.
+SESSION_REQUEST_TIMEOUT_S = 30
 
 
 def _free_port() -> int:
