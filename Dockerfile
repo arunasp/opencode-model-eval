@@ -82,13 +82,30 @@ ENV HOME=/home/harness
 # skips its runtime-creation branch entirely in the common case.
 ARG WORKER_UID=1000
 ARG WORKER_GID=1000
-RUN if command -v addgroup >/dev/null 2>&1 && ! command -v groupadd >/dev/null 2>&1; then \
-      addgroup -g "${WORKER_GID}" harness \
-      && adduser -u "${WORKER_UID}" -G harness -h "${HOME}" -s /bin/sh -D harness; \
+# Skip creation when the uid already exists in the base image -- most
+# obviously when a build is itself running as root and the caller
+# derived 0:0, which previously failed the whole build on
+# "addgroup: gid '0' in use". The entrypoint already guards its runtime
+# path with getent; this is the same guard at build time. An image
+# without a baked user is not broken: the entrypoint creates one for
+# whatever uid it is handed.
+RUN if getent passwd "${WORKER_UID}" >/dev/null 2>&1; then \
+      echo "uid ${WORKER_UID} already present in the base image, skipping user creation"; \
     else \
-      groupadd --gid "${WORKER_GID}" harness \
-      && useradd --uid "${WORKER_UID}" --gid "${WORKER_GID}" --home-dir "${HOME}" \
-           --shell /bin/sh --no-create-home harness; \
+      if ! getent group "${WORKER_GID}" >/dev/null 2>&1; then \
+        if command -v addgroup >/dev/null 2>&1 && ! command -v groupadd >/dev/null 2>&1; then \
+          addgroup -g "${WORKER_GID}" harness; \
+        else \
+          groupadd --gid "${WORKER_GID}" harness; \
+        fi; \
+      fi; \
+      if command -v adduser >/dev/null 2>&1 && ! command -v useradd >/dev/null 2>&1; then \
+        adduser -u "${WORKER_UID}" -G "$(getent group "${WORKER_GID}" | cut -d: -f1)" \
+          -h "${HOME}" -s /bin/sh -D harness; \
+      else \
+        useradd --uid "${WORKER_UID}" --gid "${WORKER_GID}" --home-dir "${HOME}" \
+          --shell /bin/sh --no-create-home harness; \
+      fi; \
     fi
 
 # Owned by the harness user rather than world-writable. The previous

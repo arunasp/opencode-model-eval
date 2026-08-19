@@ -28,6 +28,18 @@ LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/$(date -u +%Y%m%dT%H%M%SZ)-stages.log"
 
+# Create the log up front so its ownership can be fixed before anything
+# writes to it. A pipeline driven by a container that holds the docker
+# socket runs as root, and its log otherwise lands root-owned on the
+# bind mount -- the host user can then neither rotate nor delete the
+# record of their own build. Same reasoning as the entrypoint chowning
+# the opencode log volume: the process that creates the artifact is the
+# one that knows to hand it back.
+: > "$LOG_FILE"
+if [ "$(id -u)" = "0" ] && [ "${HOST_UID:-0}" != "0" ]; then
+  chown "${HOST_UID}:${HOST_GID:-$HOST_UID}" "$LOG_FILE" 2>/dev/null || true
+fi
+
 FAILED_STAGES=""
 SKIPPED_STAGES=""
 
@@ -79,6 +91,7 @@ run_stage() {
   case "$name" in
     lint) stage_lint ;;
     test) stage_test ;;
+    build) stage_build ;;
     verify) stage_verify ;;
     e2e) stage_e2e ;;
     client) stage_client ;;
@@ -419,6 +432,38 @@ stage_e2e() {
   return "$rc"
 }
 
+# Builds every image this project registers, so later operations are
+# plain tag references with no build context involved. Output lands in
+# this run's own logs/<UTC>-stages.log like any other stage, rather than
+# in a transient container's docker logs, which disappears with the
+# container that produced it.
+#
+# Three services cover all three images: server builds the `server`
+# target, discover builds `harness` (eval and git-workspace share that
+# image), and jupyter builds `jupyter`. They are named explicitly
+# because the one-shot roles and jupyter carry profiles -- a bare
+# `build` would build only server, which is correct for an orchestrator
+# and wrong here.
+stage_build() {
+  local rc=0
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log "no docker in this environment (a cicd_runner worker has no socket by design) -- skipping"
+    return 2
+  fi
+
+  # shellcheck source=/dev/null
+  source scripts/lib/opencode-global-config.sh
+
+  bash scripts/compose.sh build server discover jupyter || rc=1
+
+  log "images registered:"
+  docker images --filter 'reference=opencode-model-eval-*' \
+    --format '  {{.Repository}}:{{.Tag}}  {{.ID}}  {{.CreatedSince}}' || true
+
+  return "$rc"
+}
+
 # The single "hi" session probe, against whatever server is already
 # answering. Cheap, safe to run anywhere, and skips rather than fails
 # when there is nothing to talk to -- which is why it belongs in `all`
@@ -518,9 +563,10 @@ stage_containers() {
 
 usage() {
   cat <<USAGE
-usage: tools/pipeline.sh [lint|test|verify|e2e|client|containers|exec-bits|all]
+usage: tools/pipeline.sh [lint|test|build|verify|e2e|client|containers|exec-bits|all]
 
   all         lint, test, verify, e2e, client
+  build       build every image this project registers
   client      one "hi" session against an already-running server
   containers  build, start, probe and stop the stack (needs docker)
   exec-bits   restore executable bits the Filesystem connector drops
@@ -538,6 +584,7 @@ main() {
   case "$target" in
     lint) run_stage lint ;;
     test) run_stage test ;;
+    build) run_stage build ;;
     verify) run_stage verify ;;
     e2e) run_stage e2e ;;
     client) run_stage client ;;

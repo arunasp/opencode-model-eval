@@ -163,8 +163,12 @@ ci:
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
 
+# Delegates to the pipeline rather than calling compose directly, so the
+# build output is tee'd to logs/<UTC>-stages.log by the process that
+# owns the build. A build whose only record is a terminal scrollback or
+# a container's docker logs leaves nothing to read afterwards.
 build: exec-bits
-	$(COMPOSE) build
+	@bash tools/pipeline.sh build
 
 server-up:
 	$(COMPOSE) build
