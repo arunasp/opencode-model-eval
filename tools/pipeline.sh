@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 # tools/pipeline.sh -- staged checks for this repo.
 #
-# Stages: lint, test, verify. `all` runs them in that order and reports
-# every failure rather than stopping at the first one.
+# Stages: lint, test, verify, e2e, client, containers. `all` runs
+# lint/test/verify/e2e/client in that order and reports every failure
+# rather than stopping at the first one.
+#
+# `containers` is deliberately NOT in `all`. It builds images, starts a
+# real server and stops it again -- a stateful action on a shared
+# machine that has to be asked for rather than arriving as a side
+# effect of a check run.
 #
 # A stage that exits 2 counts as SKIPPED, not failed: it means a tool the
 # stage needs is absent from this environment. That distinction matters
 # because the same pipeline runs in a cicd_runner worker, in a sandbox and
-# on a developer machine, and those carry different toolchains.
+# on a developer machine, and those carry different toolchains. The two
+# new stages lean on it heavily: a worker has no docker socket at all, so
+# `containers` can only ever skip there, and `client` skips unless some
+# server is actually answering.
 #
 # Every run is tee'd to logs/<UTC>-stages.log.
 set -uo pipefail
@@ -36,6 +45,8 @@ run_stage() {
     test) stage_test ;;
     verify) stage_verify ;;
     e2e) stage_e2e ;;
+    client) stage_client ;;
+    containers) stage_containers ;;
     *) log "unknown stage: $name"; return 1 ;;
   esac
   rc=$?
@@ -272,9 +283,110 @@ stage_e2e() {
   return "$rc"
 }
 
+# The single "hi" session probe, against whatever server is already
+# answering. Cheap, safe to run anywhere, and skips rather than fails
+# when there is nothing to talk to -- which is why it belongs in `all`
+# while `containers` below does not.
+stage_client() {
+  python3 scripts/e2e_session_probe.py
+  return $?
+}
+
+# Any HTTP answer means up; only a connection-level failure means not --
+# the same test entrypoint.sh's own wait loop uses.
+server_answering() {
+  python3 -c "
+import sys, urllib.error, urllib.request
+try:
+    urllib.request.urlopen('$1/session', timeout=3)
+except urllib.error.HTTPError:
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+sys.exit(0)
+" 2>/dev/null
+}
+
+# Full container lifecycle: build, start, probe, stop. This is the stage
+# that makes the stack drivable without anyone building or launching it
+# by hand.
+#
+# It cannot run in a cicd_runner worker, and not for want of a binary:
+# a worker is started with no docker socket at all, by explicit design.
+# Reaching it from an orchestrator means the coordinator side --
+# container_control(relative_path, action) -- with this stage covering
+# the same ground for a shell or a CI job that does have a daemon.
+#
+# A stack that was already up is left alone: the probe runs against it
+# and nothing is stopped afterwards. Tearing down a server someone else
+# started, as a side effect of a check, is not this stage's business.
+stage_containers() {
+  local rc=0 started_here=false
+
+  if ! command -v docker >/dev/null 2>&1; then
+    log "no docker in this environment (a cicd_runner worker has no socket by design) -- skipping"
+    log "drive the lifecycle from the coordinator instead: container_control(relative_path, up|down|status)"
+    return 2
+  fi
+
+  # Compose needs OPENCODE_GLOBAL_CONFIG resolved, and this stage can be
+  # invoked as `bash tools/pipeline.sh containers` without the Makefile's
+  # own default ever applying.
+  # shellcheck source=/dev/null
+  source scripts/lib/opencode-global-config.sh
+
+  local port="${OPENCODE_SERVE_PORT:-49605}"
+  local base_url="http://localhost:${port}"
+
+  if server_answering "$base_url"; then
+    log "a server is already answering at $base_url -- probing it, leaving it running"
+  else
+    started_here=true
+    log "building the server image"
+    bash scripts/compose.sh build server || return 1
+    log "starting the server"
+    bash scripts/compose.sh up -d server || return 1
+
+    local waited=0
+    until server_answering "$base_url"; do
+      waited=$((waited + 3))
+      if [ "$waited" -ge 120 ]; then
+        log "server did not answer at $base_url within ${waited}s"
+        bash scripts/compose.sh logs --tail 40 server
+        bash scripts/compose.sh down
+        return 1
+      fi
+      sleep 3
+    done
+    log "server answering after ${waited}s"
+  fi
+
+  OPENCODE_SERVER_URL="$base_url" python3 scripts/e2e_session_probe.py
+  rc=$?
+  case "$rc" in
+    0) log "session probe: PASS" ;;
+    2) log "session probe: SKIPPED (no provider/model selected)" ;;
+    *) log "session probe: FAIL" ;;
+  esac
+
+  if [ "$started_here" = true ]; then
+    log "stopping the stack this stage started"
+    bash scripts/compose.sh down || rc=1
+  fi
+
+  # A skipped probe is not a failed lifecycle: the containers still
+  # built, started, answered and stopped.
+  [ "$rc" = 2 ] && rc=0
+  return "$rc"
+}
+
 usage() {
   cat <<USAGE
-usage: tools/pipeline.sh [lint|test|verify|e2e|all]
+usage: tools/pipeline.sh [lint|test|verify|e2e|client|containers|all]
+
+  all         lint, test, verify, e2e, client
+  client      one "hi" session against an already-running server
+  containers  build, start, probe and stop the stack (needs docker)
 USAGE
 }
 
@@ -285,11 +397,14 @@ main() {
     test) run_stage test ;;
     verify) run_stage verify ;;
     e2e) run_stage e2e ;;
+    client) run_stage client ;;
+    containers) run_stage containers ;;
     all)
       run_stage lint
       run_stage test
       run_stage verify
       run_stage e2e
+      run_stage client
       ;;
     -h|--help) usage; return 0 ;;
     *) usage; return 1 ;;
