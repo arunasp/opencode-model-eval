@@ -76,8 +76,8 @@ equivalent command on whichever you pick:
 
 | Action | Terraform | Docker Compose |
 |---|---|---|
-| Deploy harness | `make tf-apply` | `docker-compose up -d server` |
-| Remove harness | `make tf-destroy` | `docker-compose down` |
+| Deploy harness | `make tf-apply` | `make server-up` |
+| Remove harness | `make tf-destroy` | `make server-down` |
 | Run an eval | `scripts/tf-select-and-run-eval.sh` | `scripts/select-and-run-eval.sh` |
 | Jupyter up/down | `make tf-jupyter-up` / `-down` | `make jupyter-up` / `-down` |
 
@@ -118,7 +118,7 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
   made safe by mounting nothing but read-only `auth.json` rather than
   by narrowing the command set) is a real, isolated place to run
   agentic/coding tasks, but it's a standalone one-shot container
-  (`docker-compose run --rm git-workspace` / `make tf-git-workspace`),
+  (`make git-workspace` / `make tf-git-workspace`),
   not a `test_ladder.json` category yet — `coding`,
   `instruction_following`, and `failure_diagnostics_and_fixing` tiers
   still can't actually exercise real tool use through the structured

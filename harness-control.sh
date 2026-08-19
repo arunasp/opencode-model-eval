@@ -15,7 +15,7 @@
 # Three real actions, each asks which backend first (both Terraform
 # and Docker Compose are fully supported paths in this repo, kept in
 # parallel on purpose -- see README's "Two deployment paths" section):
-#   - Deploy harness  -> `make tf-apply` or `docker-compose up -d server`
+#   - Deploy harness  -> `make tf-apply` or `compose up -d server`
 #                        (checks OPENCODE_SERVE_PORT for an already-
 #                        reachable server first -- asks reuse-or-
 #                        redeploy interactively, or set FORCE_REDEPLOY=1
@@ -23,7 +23,7 @@
 #                        opt-in convention as AUTO_APPROVE for
 #                        terraform's own confirmation -- for batch/
 #                        scripted execution with no TTY available)
-#   - Remove harness  -> `make tf-destroy` or `docker-compose down`
+#   - Remove harness  -> `make tf-destroy` or `compose down`
 #   - Run an eval     -> provider/model (and, on the Compose side,
 #                        local-vs-cloud) picking happens RIGHT HERE,
 #                        in this menu pane, via
@@ -137,6 +137,8 @@ pick_backend() {
 
 # shellcheck source=/dev/null
 source scripts/lib/server-lifecycle.sh
+# shellcheck source=/dev/null
+source scripts/lib/compose.sh
 
 # run_in_output_pane <bash-command-string>
 # Sends a command to the output pane via tmux send-keys, then blocks
@@ -224,7 +226,8 @@ deploy() {
     # normal interactive path -- lets you switch backends there).
     case "${existing}" in
       Terraform) run_logged "remove-terraform-before-redeploy" make tf-destroy ;;
-      "Docker Compose") run_logged "remove-compose-before-redeploy" docker-compose down ;;
+      "Docker Compose") compose_resolve || return 1
+                        run_logged "remove-compose-before-redeploy" "${COMPOSE[@]}" down ;;
       *) echo "Can't identify the backend holding the port -- stop it manually, then retry." >&2; return 1 ;;
     esac
     if [ -n "${FORCE_REDEPLOY:-}" ]; then
@@ -240,7 +243,8 @@ deploy() {
   fi
   case "$backend" in
     Terraform) run_logged "deploy-terraform" make tf-apply ;;
-    "Docker Compose") run_logged "deploy-compose" bash -c "docker-compose build && docker-compose up -d server" ;;
+    "Docker Compose") compose_resolve || return 1
+                      run_logged "deploy-compose" bash -c "${COMPOSE[*]} build && ${COMPOSE[*]} up -d server" ;;
   esac
 }
 
@@ -249,7 +253,8 @@ remove() {
   backend="$(pick_backend)" || return 1
   case "$backend" in
     Terraform) run_logged "remove-terraform" make tf-destroy ;;
-    "Docker Compose") run_logged "remove-compose" docker-compose down ;;
+    "Docker Compose") compose_resolve || return 1
+                      run_logged "remove-compose" "${COMPOSE[@]}" down ;;
   esac
 }
 
@@ -299,7 +304,7 @@ pick_cloud_model_terraform() {
 pick_cloud_model_compose() {
   ensure_images_built
   local candidates_json
-  candidates_json="$(docker-compose run --rm -T discover --list-json)" || {
+  candidates_json="$(compose run --rm -T discover --list-json)" || {
     echo "Failed to fetch candidates." >&2
     return 1
   }
@@ -348,7 +353,7 @@ capture_server_log_since() {
         > "${server_log_file}" 2>&1 || true
       ;;
     "Docker Compose")
-      docker-compose logs --no-color --since "${since}" server \
+      compose logs --no-color --since "${since}" server \
         > "${server_log_file}" 2>&1 || true
       ;;
   esac

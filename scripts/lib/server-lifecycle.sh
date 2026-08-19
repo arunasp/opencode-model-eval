@@ -1,5 +1,9 @@
 # shellcheck shell=bash
 # scripts/lib/server-lifecycle.sh -- shared server-detection primitive.
+#
+# Sources scripts/lib/compose.sh by its own directory rather than a
+# path relative to the caller, so it resolves whatever cwd the caller
+# ran from.
 # Sourced by harness-control.sh, select-and-run-eval.sh, and
 # tf-select-and-run-eval.sh; not meant to be run standalone (no
 # shebang/executable bit on purpose, matching
@@ -25,9 +29,14 @@
 # are distinguished by their confirmed, different container naming:
 # Terraform's server has a fixed name (terraform/main.tf's
 # docker_container.server: name = "opencode-model-eval-server", no
-# index suffix); Compose (confirmed v1.29.2, the legacy CLI) names
-# containers "<project>_<service>_<index>" with underscores --
-# unambiguous against Terraform's hyphenated name.
+# index suffix); Compose names containers
+# "<project>_<service>_<index>" on the v1 CLI and
+# "<project>-<service>-<index>" on v2, so both separators are matched;
+# Terraform's name carries no index suffix at all, which is what keeps
+# the two apart.
+# shellcheck source=/dev/null
+source "$(dirname "${BASH_SOURCE[0]}")/compose.sh"
+
 _check_port_for_server() {
   local port="$1"
   python3 -c "
@@ -40,7 +49,7 @@ except Exception:
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "opencode-model-eval-server"; then
     echo "Terraform"
-  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^opencode-model-eval_server_"; then
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -qE "^opencode-model-eval[_-]server[_-]"; then
     echo "Docker Compose"
   else
     echo "unknown backend"
@@ -95,6 +104,6 @@ existing_server_backend() {
 # a build: key (no service arg), matching Terraform's own apply-time
 # behavior of rebuilding whatever actually needs it.
 ensure_images_built() {
-  echo "docker-compose build"
-  docker-compose build
+  echo "$(compose_str) build"
+  compose build
 }

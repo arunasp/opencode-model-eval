@@ -10,7 +10,7 @@
 #   make eval                  -- interactive model picker
 #   make eval MODEL=hy3        -- run a specific target directly, no menu
 #   make eval MODEL=hy3 DRY_RUN=1   -- print the command, don't run it
-#   make build                 -- docker-compose build (all services)
+#   make build                 -- build all service images
 #   make server-up             -- start the persistent opencode server
 #   make server-down           -- stop everything
 #   make server-logs           -- tail the server's own logs (opencode's
@@ -30,7 +30,7 @@
 #   make tf-output                -- terraform output (both next_step
 #                                     and results_dirs)
 #   make git-workspace             -- one-shot isolated git/bash/edit
-#                                      workspace (docker-compose run --rm)
+#                                      workspace (compose run --rm)
 #   make tf-git-workspace           -- same, Terraform side
 #   make jupyter-up                 -- start the persistent Jupyter
 #                                       authoring server
@@ -49,7 +49,7 @@ help:
 	@echo "make eval                          interactive model picker"
 	@echo "make eval MODEL=hy3                run a specific target directly, no menu"
 	@echo "make eval MODEL=hy3 DRY_RUN=1       print the command, don't run it"
-	@echo "make build                         docker-compose build (all services)"
+	@echo "make build                         build all service images"
 	@echo "make server-up                     start the persistent opencode server"
 	@echo "make server-down                   stop everything"
 	@echo "make server-logs                   tail the server's own logs"
@@ -75,40 +75,46 @@ help:
 # does (var.opencode_global_config_path's own default) -- ?= only takes
 # effect if not already set from the environment or a prior assignment,
 # and $(HOME) is Make's own reliable built-in, not dependent on
-# docker-compose's interpolation (whose nested-default support is a v2
-# feature this machine's installed 1.29.2 doesn't have).
+# Compose interpolation (nested defaults are a v2 feature, and this
+# repo also runs against the v1 CLI, which lacks them).
 OPENCODE_GLOBAL_CONFIG ?= $(HOME)/.config/opencode/opencode.json
 export OPENCODE_GLOBAL_CONFIG
+
+# Compose is either the v2 `docker compose` subcommand or the v1
+# `docker-compose` binary, and this repo has to run on machines
+# carrying either. scripts/compose.sh picks whichever is present at
+# call time and fails loudly when neither is.
+COMPOSE := bash scripts/compose.sh
 
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
 
 build:
-	docker-compose build
+	$(COMPOSE) build
 
 server-up:
-	docker-compose build
-	docker-compose up -d server
+	$(COMPOSE) build
+	$(COMPOSE) up -d server
 
 server-down:
-	docker-compose down
+	$(COMPOSE) down
 
 server-logs:
 	@if docker inspect opencode-model-eval-server >/dev/null 2>&1; then \
 		docker logs -f opencode-model-eval-server; \
 	else \
-		docker-compose logs -f server; \
+		$(COMPOSE) logs -f server; \
 	fi
 
 jupyter-up:
-	docker-compose build jupyter
-	docker-compose up -d jupyter
+	$(COMPOSE) build jupyter
+	$(COMPOSE) up -d jupyter
 
 jupyter-down:
-	docker-compose stop jupyter
+	$(COMPOSE) stop jupyter
 
 jupyter-logs:
-	docker-compose logs -f jupyter
+	$(COMPOSE) logs -f jupyter
 
 tf-jupyter-up: tf-init
 	cd terraform && terraform apply -target=docker_container.jupyter -target=null_resource.jupyter_connect_info
@@ -120,8 +126,8 @@ auth:
 	@bash scripts/ensure-auth-data.sh $(KEYS)
 
 git-workspace:
-	docker-compose build git-workspace
-	docker-compose run --rm git-workspace
+	$(COMPOSE) build git-workspace
+	$(COMPOSE) run --rm git-workspace
 
 tf-git-workspace: tf-init
 	cd terraform && terraform apply -target=docker_container.git_workspace

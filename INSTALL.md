@@ -25,7 +25,7 @@ the exact format expected. Not set to a `~`-prefixed default in
 `docker-compose.yml` deliberately — tilde expansion in a Compose volume
 path is inconsistent across compose versions (confirmed via real
 `docker/compose` issues #6506, #3872), so this needs to be a real
-shell-expanded absolute path, exported before you run `docker-compose` or
+shell-expanded absolute path, exported before you run Compose or
 `terraform apply`.
 
 Scope credentials down to the one provider key each container actually
@@ -55,11 +55,11 @@ key values never reach Terraform state.
 bash scripts/ensure-auth-data.sh opencode deepseek zhipu
 ```
 
-docker-compose (v1.29.2 confirmed, the legacy CLI) has no precondition/
-pre-flight hook mechanism, unlike Terraform's `terraform_data` +
+Compose has no precondition/
+pre-flight hook mechanism on either CLI, unlike Terraform's `terraform_data` +
 `precondition`, so this can't run automatically the way the Terraform
 path's does — it's a script you run yourself, once, before
-`docker-compose up`/`run`. What it actually fixes: Docker's bind-mount
+`make server-up` or an eval run. What it actually fixes: Docker's bind-mount
 behavior silently creates an EMPTY DIRECTORY at `auth-data/auth.json`
 if that path doesn't exist yet as a real file when a container first
 mounts it — hit live during this project's own setup, every
@@ -99,7 +99,7 @@ authoring server for hand-writing custom-test notebooks — see
 stage for what each of those is for) / Quit.
 
 This wraps the same underlying scripts described below (`make tf-apply`,
-`docker-compose up -d server`, `select-and-run-eval.sh`,
+`make server-up`, `select-and-run-eval.sh`,
 `tf-select-and-run-eval.sh`) — it's a control surface over them, not a
 separate mechanism. Everything from here down documents those
 underlying scripts directly, for scripted/non-interactive use or if you
@@ -111,10 +111,10 @@ wraps everything below into one step:
 ```bash
 bash scripts/select-and-run-eval.sh                # menu: pick a number
 bash scripts/select-and-run-eval.sh hy3             # skip the menu, run directly by name
-bash scripts/select-and-run-eval.sh --dry-run hy3   # print the docker-compose command, don't run it
+bash scripts/select-and-run-eval.sh --dry-run hy3   # print the compose command, don't run it
 ```
 
-Local Ollama options are derived live from `docker-compose config
+Local Ollama options are derived live from `compose config
 --services`, so this can't drift from the actual configured service
 list. Cloud is a single `cloud` entry standing in for live discovery
 via `opencode models --verbose` (the `discover` service) — not a fixed

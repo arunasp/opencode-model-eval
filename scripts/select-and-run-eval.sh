@@ -45,11 +45,10 @@ source scripts/lib/opencode-global-config.sh
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 # shellcheck source=/dev/null
 source scripts/lib/host-model-picker.sh
+# shellcheck source=/dev/null
+source scripts/lib/compose.sh
 
-if ! command -v docker-compose >/dev/null 2>&1; then
-  echo "error: docker-compose not found on PATH" >&2
-  exit 1
-fi
+compose_resolve || exit 1
 
 if [ -z "${OPENCODE_GLOBAL_CONFIG:-}" ]; then
   echo "error: OPENCODE_GLOBAL_CONFIG is empty -- scripts/lib/opencode-global-config.sh should have defaulted it, this shouldn't happen" >&2
@@ -152,9 +151,9 @@ run_selected() {
 
   if [ "$kind" = "cloud" ]; then
     if [ -t 0 ]; then
-      echo "docker-compose run --rm -T discover --list-json"
+      echo "$(compose_str) run --rm -T discover --list-json"
       if [ "$dry_run" = false ]; then
-        candidates_json="$(docker-compose run --rm -T discover --list-json)"
+        candidates_json="$(compose run --rm -T discover --list-json)"
         selected_full_id="$(host_model_picker "$candidates_json")" || {
           echo "No model selected." >&2
           exit 1
@@ -163,12 +162,12 @@ run_selected() {
         model_id="${selected_full_id#*/}"
       fi
     else
-      echo "docker-compose run --rm -T discover"
+      echo "$(compose_str) run --rm -T discover"
       if [ "$dry_run" = false ]; then
         # No real terminal (CI, scripted) -- no one to answer a host
         # prompt, so let the container fall back to its own unattended
         # auto-select instead, writing results/discovered-model.env.
-        docker-compose run --rm -T discover
+        compose run --rm -T discover
         env_file="results/discovered/discovered-model.env"
         if [ ! -f "$env_file" ]; then
           echo "error: discovery ran but $env_file wasn't written -- check the output above" >&2
@@ -182,13 +181,13 @@ run_selected() {
     fi
     if [ "$dry_run" = false ]; then
       echo "Selected: ${provider}/${model_id}"
-      echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
-      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
+      echo "$(compose_str) run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+      exec "${COMPOSE[@]}" run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
     fi
   else
-    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=$name eval"
+    echo "$(compose_str) run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID=$name eval"
     if [ "$dry_run" = false ]; then
-      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID="$name" eval
+      exec "${COMPOSE[@]}" run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODEL_ID="$name" eval
     fi
   fi
 }
@@ -204,18 +203,18 @@ if [ -n "$direct_name" ]; then
   if [[ "$direct_name" == local/ollama/* ]]; then
     provider="local/ollama"
     model_id="${direct_name#local/ollama/}"
-    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+    echo "$(compose_str) run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
     if [ "$dry_run" = false ]; then
-      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
+      exec "${COMPOSE[@]}" run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
     fi
     exit 0
   fi
   if [[ "$direct_name" == */* ]]; then
     provider="${direct_name%%/*}"
     model_id="${direct_name#*/}"
-    echo "docker-compose run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
+    echo "$(compose_str) run --rm -e OPENCODE_MODEL_PROVIDER=$provider -e OPENCODE_MODEL_ID=$model_id eval"
     if [ "$dry_run" = false ]; then
-      exec docker-compose run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
+      exec "${COMPOSE[@]}" run --rm -e OPENCODE_MODEL_PROVIDER="$provider" -e OPENCODE_MODEL_ID="$model_id" eval
     fi
     exit 0
   fi
