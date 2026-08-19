@@ -43,7 +43,8 @@
 .PHONY: help eval build server-up server-down server-logs auth \
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
-        tf-jupyter-up tf-jupyter-down
+        tf-jupyter-up tf-jupyter-down \
+        lint test verify ci
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -70,6 +71,10 @@ help:
 	@echo "make jupyter-logs                  tail it (auth token appears here on first start)"
 	@echo "make tf-jupyter-up                 same, Terraform side"
 	@echo "make tf-jupyter-down               same, Terraform side"
+	@echo "make lint                          shellcheck, py_compile, config parse"
+	@echo "make test                          run every scripts/test_* suite"
+	@echo "make verify                        assert the Compose resolver is the only call path"
+	@echo "make ci                            lint, test and verify in one run"
 
 # Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
 # does (var.opencode_global_config_path's own default) -- ?= only takes
@@ -85,6 +90,21 @@ export OPENCODE_GLOBAL_CONFIG
 # carrying either. scripts/compose.sh picks whichever is present at
 # call time and fails loudly when neither is.
 COMPOSE := bash scripts/compose.sh
+
+# Staged checks. Each delegates to tools/pipeline.sh, which reports every
+# failing stage rather than stopping at the first, tees to logs/, and
+# treats exit 2 as SKIPPED when a tool is missing from this environment.
+lint:
+	@bash tools/pipeline.sh lint
+
+test:
+	@bash tools/pipeline.sh test
+
+verify:
+	@bash tools/pipeline.sh verify
+
+ci:
+	@bash tools/pipeline.sh all
 
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
