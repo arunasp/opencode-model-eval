@@ -33,6 +33,42 @@ SKIPPED_STAGES=""
 
 log() { printf '%s\n' "$*"; }
 
+# The Claude Desktop Filesystem connector writes files without an
+# executable bit, so any script it edits comes back mode 644 and git
+# records a mode change on the next commit -- which then blocks a later
+# checkout of that path. This has cost several amend cycles.
+#
+# The list comes from git itself rather than being maintained here: only
+# a path already committed 100755 is touched, so this can never add an
+# executable bit that was not already recorded. The reverse case (a file
+# executable in the worktree but committed 644) is deliberately left
+# alone -- that is a real decision to make, not drift to paper over, and
+# stage_verify flags it.
+#
+# Called from main() on every invocation, not offered as a step to
+# remember: a fix that has to be invoked is a fix that gets skipped.
+restore_exec_bits() {
+  command -v git >/dev/null 2>&1 || return 0
+  git rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+  local path restored=0 rc=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    [ -f "$path" ] || continue
+    [ -x "$path" ] && continue
+    if chmod +x "$path"; then
+      log "restored executable bit: $path"
+      restored=$((restored + 1))
+    else
+      log "could not restore executable bit: $path"
+      rc=1
+    fi
+  done < <(git ls-files -s | grep '^100755 ' | cut -f2)
+
+  [ "$restored" -gt 0 ] && log "exec bits restored: $restored file(s)"
+  return "$rc"
+}
+
 # Stages are dispatched by name rather than by function reference, so the
 # call sites stay statically visible to ShellCheck.
 run_stage() {
@@ -47,6 +83,7 @@ run_stage() {
     e2e) stage_e2e ;;
     client) stage_client ;;
     containers) stage_containers ;;
+    exec-bits) restore_exec_bits ;;
     *) log "unknown stage: $name"; return 1 ;;
   esac
   rc=$?
@@ -227,6 +264,21 @@ stage_verify() {
     rc=1
   fi
 
+  # A mode-only diff blocks a later checkout of that path, so it should
+  # never survive into a commit. restore_exec_bits() handles the common
+  # direction automatically; what reaches here is the other one -- a file
+  # made executable in the worktree but committed 644, which is a real
+  # decision to make rather than connector damage to paper over.
+  local mode_changes
+  mode_changes="$(git diff --summary 2>/dev/null | grep 'mode change' || true)"
+  if [ -n "$mode_changes" ]; then
+    log "uncommitted mode changes:"
+    log "$mode_changes"
+    rc=1
+  else
+    log "no uncommitted file-mode changes"
+  fi
+
   return "$rc"
 }
 
@@ -382,16 +434,23 @@ stage_containers() {
 
 usage() {
   cat <<USAGE
-usage: tools/pipeline.sh [lint|test|verify|e2e|client|containers|all]
+usage: tools/pipeline.sh [lint|test|verify|e2e|client|containers|exec-bits|all]
 
   all         lint, test, verify, e2e, client
   client      one "hi" session against an already-running server
   containers  build, start, probe and stop the stack (needs docker)
+  exec-bits   restore executable bits the Filesystem connector drops
+              (also runs automatically before any other stage)
 USAGE
 }
 
 main() {
   local target="${1:-all}"
+
+  # Before anything else, and on every invocation. See
+  # restore_exec_bits() for why this is not a step to be invoked.
+  restore_exec_bits || true
+
   case "$target" in
     lint) run_stage lint ;;
     test) run_stage test ;;
@@ -399,6 +458,7 @@ main() {
     e2e) run_stage e2e ;;
     client) run_stage client ;;
     containers) run_stage containers ;;
+    exec-bits) run_stage exec-bits ;;
     all)
       run_stage lint
       run_stage test

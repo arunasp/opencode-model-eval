@@ -44,7 +44,7 @@
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
         tf-jupyter-up tf-jupyter-down \
-        lint test verify e2e ci client containers
+        lint test verify e2e ci client containers exec-bits
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -77,6 +77,7 @@ help:
 	@echo "make e2e                           real end-to-end check against a live Ollama, skips if none reachable"
 	@echo "make client                        one 'hi' session against a running server, skips if none answers"
 	@echo "make containers                    build, start, probe and stop the stack (needs a docker daemon)"
+	@echo "make exec-bits                     restore executable bits the Filesystem connector drops"
 	@echo "make ci                            lint, test, verify, e2e and client in one run"
 
 # Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
@@ -127,13 +128,20 @@ client:
 containers:
 	@bash tools/pipeline.sh containers
 
+# Runs on every pipeline invocation too -- named here as well because
+# `make build` never goes near tools/pipeline.sh, and an image built from
+# a script that lost its executable bit is the same defect one layer
+# further along.
+exec-bits:
+	@bash tools/pipeline.sh exec-bits
+
 ci:
 	@bash tools/pipeline.sh all
 
 eval:
 	@bash scripts/select-and-run-eval.sh $(if $(DRY_RUN),--dry-run) $(MODEL)
 
-build:
+build: exec-bits
 	$(COMPOSE) build
 
 server-up:
