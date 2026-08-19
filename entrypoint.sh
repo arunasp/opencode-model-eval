@@ -80,6 +80,24 @@ if [ -n "${drop_uid}" ] && [ -n "${drop_gid}" ] && [ "$(id -u)" = "0" ]; then
     adduser -u "${drop_uid}" -G harness -h "${HOME}" -s /bin/sh -D harness >/dev/null 2>&1
   fi
 
+  # The opencode log directory is a named volume, so it keeps whatever
+  # ownership earlier runs left in it. Anything written there while this
+  # image still ran as root is unopenable after the drop, and opencode
+  # treats that as fatal: "PermissionDenied: FileSystem.open". Chowning
+  # it here, as root, migrates an existing deployment on the next start
+  # instead of requiring a manual step nobody would know to take.
+  #
+  # Scoped to this one directory on purpose. ${HOME} also holds the
+  # read-only auth.json and opencode.json mounts, which cannot be
+  # chowned, and the bind-mounted /results and /notebooks belong to the
+  # host user already -- rewriting ownership there is the failure this
+  # whole mechanism exists to avoid, not a fix for it.
+  opencode_log_dir="${HOME}/.local/share/opencode/log"
+  if [ -d "${opencode_log_dir}" ]; then
+    chown -R "${drop_uid}:${drop_gid}" "${opencode_log_dir}" 2>/dev/null \
+      || log "could not chown ${opencode_log_dir} -- opencode may fail to open its log"
+  fi
+
   log "dropping to ${drop_uid}:${drop_gid}"
   # Word-splitting is intended: drop_cmd is assembled here from the two
   # numeric ids, never from a caller-supplied string.
