@@ -41,6 +41,7 @@ Usage:
     with OllamaModel("qwen2.5-coder:7b"):   # warm before, unload after
         ...
 """
+import base64
 import json
 import os
 import socket
@@ -528,11 +529,32 @@ class OllamaModel:
 
     # -- direct inference ----------------------------------------------
 
-    def chat(self, prompt, system=None, options=None, timeout=300):
+    def chat(self, prompt, system=None, options=None, images=None,
+             think=None, timeout=600):
         """One /api/chat exchange, straight to Ollama.
 
         Returns the reply text. The full record, including via and the
         options sent, is appended to self.replies.
+
+        `images` takes raw bytes, a base64 str, or a path to a file --
+        each becomes an entry in the native `images` array on the user
+        message. That is Ollama's OWN field (api.Message.Images, raw
+        base64, no mime wrapper), NOT the OpenAI `image_url` shape,
+        which only the /v1 path understands and which rejects http(s)
+        URLs outright. Sending an image to a model whose capabilities
+        lack "vision" is accepted by the API and silently ignored by
+        the model, so check capabilities first.
+
+        `think` maps to the request's own top-level field: False turns
+        thinking off for models that have it on by default, True forces
+        it on, None leaves the model's default. THIS INTERACTS WITH
+        num_predict AND THE INTERACTION IS SILENT: thinking tokens are
+        spent from the same budget as the answer, so a small
+        num_predict against a thinking model returns done_reason
+        "length" with EMPTY content -- the model never reached its
+        reply. Measured here on qwen3.8:latest, which thinks by
+        default: num_predict=40 produced nothing at all. Either set
+        think=False or leave enough budget for both.
 
         NOT an eval. See the class docstring: this bypasses opencode,
         so nothing here is comparable with harness results.
@@ -540,32 +562,57 @@ class OllamaModel:
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        user_message = {"role": "user", "content": prompt}
+        if images:
+            user_message["images"] = [self._encode_image(i) for i in images]
+        messages.append(user_message)
         body = {"model": self.model_id, "messages": messages, "stream": False}
         if options:
             body["options"] = options
+        if think is not None:
+            body["think"] = think
 
         started = time.monotonic()
         response = self._post("/api/chat", body, timeout=timeout)
-        reply = (response.get("message") or {}).get("content", "")
+        message = response.get("message") or {}
+        reply = message.get("content", "")
         self.replies.append({
             "via": "ollama-direct",
             "model": self.model_id,
             "prompt": prompt,
             "system": system,
             "options": options,
+            "think": think,
+            "images": len(images) if images else 0,
             "reply": reply,
+            "thinking": message.get("thinking"),
             "elapsed_s": round(time.monotonic() - started, 2),
             "done_reason": response.get("done_reason"),
             "eval_count": response.get("eval_count"),
+            "prompt_eval_count": response.get("prompt_eval_count"),
         })
         if not reply.strip():
+            hint = ""
+            if response.get("done_reason") == "length":
+                hint = (" -- the token budget ran out before any reply; if this "
+                        "model thinks by default, thinking spent it. Pass "
+                        "think=False or raise num_predict")
             raise HarnessError(
                 f"/api/chat returned an empty reply for {self.model_id} "
-                f"(done_reason={response.get('done_reason')!r}) -- an empty "
+                f"(done_reason={response.get('done_reason')!r}){hint}. An empty "
                 "transcript scored as a pass is a failure this project has "
                 "already had once")
         return reply
+
+    @staticmethod
+    def _encode_image(image):
+        """Accept bytes, a base64 str, or a path; return base64 str."""
+        if isinstance(image, (bytes, bytearray)):
+            return base64.b64encode(image).decode()
+        path = Path(image)
+        if path.is_file():
+            return base64.b64encode(path.read_bytes()).decode()
+        return str(image)      # already base64
 
     def _post(self, path, body, timeout=60):
         data = json.dumps(body).encode()
