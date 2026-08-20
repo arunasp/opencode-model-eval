@@ -147,16 +147,68 @@ resource "docker_image" "harness" {
   }
 }
 
+data "external" "container_conflicts" {
+  program = ["bash", "${path.module}/../scripts/tf-detect-container-conflicts.sh"]
+  query   = {}
+}
+
+locals {
+  # A container already holding one of our names is invisible to the
+  # plan, because Terraform only knows its own state. Without this the
+  # operator approves a plan that looks clean, Terraform builds the
+  # volume, network and three images, and only then fails at create
+  # time -- the approval was made on a plan that could not show the
+  # problem. Surfacing it as data lets a precondition fail the PLAN,
+  # at the point where the decision is already being made.
+  container_conflict         = data.external.container_conflicts.result.found == "true"
+  container_conflict_detail  = data.external.container_conflicts.result.detail
+  container_conflict_compose = data.external.container_conflicts.result.compose_owned
+
+  container_conflict_message = join("\n", [
+    "Containers already hold names this configuration creates:",
+    "  ${local.container_conflict_detail}",
+    "",
+    local.container_conflict_compose != ""
+    ? "Compose owns some of these. Compose and Terraform publish the same ports, so only one runtime can exist at a time -- renaming would move the failure from a name conflict to a port conflict. Take the other stack down first: make down (or container_control down)."
+    : "These carry no Compose label. If they are leftovers from an earlier Terraform run whose state was lost, remove them with 'docker rm -f <name>' and re-apply. If they are not ours, nothing here will touch them.",
+    "",
+    "Adoption is deliberately not offered: importing a Compose-created container would leave Compose believing it still owns something Terraform will later destroy.",
+  ])
+}
+
 resource "docker_container" "server" {
   name  = "opencode-model-eval-server"
   image = docker_image.server.image_id
   command = ["serve"]
   depends_on = [terraform_data.auth_file_check]
 
+  # Provenance, so the host itself records who created this. Nothing
+  # previously distinguished a Terraform container from a Compose one
+  # or from an unrelated container that happened to share the name, so
+  # the conflict check could only refuse rather than say what it found.
+  labels {
+    label = "managed-by"
+    value = "terraform"
+  }
+  labels {
+    label = "project"
+    value = "opencode-model-eval"
+  }
+
   # This IS a persistent service now, unlike the old per-model batch
   # containers -- must_run = true reflects that a stopped server is
   # drift, not an expected end state.
   must_run = true
+
+  # On THIS resource rather than an earlier one: the precondition
+  # belongs to the thing whose name actually collides, so the plan
+  # attributes the failure where an operator would look for it.
+  lifecycle {
+    precondition {
+      condition     = !local.container_conflict
+      error_message = local.container_conflict_message
+    }
+  }
   attach   = false
   rm       = false
 
