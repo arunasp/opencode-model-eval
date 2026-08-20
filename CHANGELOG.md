@@ -9,6 +9,27 @@ Tagged versions are created after merging to `main`, per
 
 ### Added
 
+- **Every pipeline run names the files it wrote.** A tool invocation
+  returns stdout and stderr; the log the run tee'd everything to was
+  never named there, so opening it was a step the reader had to
+  remember. In practice that step gets skipped, and a verdict read from
+  stdout can disagree with the log on disk -- which carried tracebacks,
+  resource warnings, and a suite skipping itself for a missing
+  dependency. Each run now ends with an `ARTIFACTS WRITTEN` manifest
+  listing its own log path and size plus any file a stage declared
+  through `record_artifact`, printed where the caller cannot avoid it. A
+  declared artifact that is not on disk is listed as `MISSING` rather
+  than omitted.
+- **The test stage reports what it did not run.** The same `make test`
+  executes a different set of suites in each environment: the
+  cicd-runner worker has no `jq`, the harness image has neither `jq` nor
+  Node, a developer machine has both. Skips were single lines in the
+  middle of the output, so a run that tested less looked identical to
+  one that tested more. The stage now counts executed suites, names
+  skipped ones with the reason, and puts both next to the verdict.
+  Suites that skip internally (a `unittest` run reporting `skipped=`,
+  which exits zero) are counted too.
+
 - **`run_eval_client.py` has a command line.** It previously read no
   argv at all, so `--help` silently executed the entire 25-tier ladder.
   `--categories` and `--tiers` take ids, 1-based positions or ranges;
@@ -59,6 +80,16 @@ Tagged versions are created after merging to `main`, per
   import is deliberately not offered.
 
 ### Fixed
+
+- **The end-to-end suite no longer leaks its `opencode serve`
+  process.** Cleanup called `kill()` without a wait, so the child was
+  never reaped and Python reported it still running at interpreter
+  exit. Cleanup now kills, waits, and drains the pipe. This removes the
+  leak; it did not resolve the suite's intermittent hang at session
+  creation, which remains open -- the readiness check is a TCP connect,
+  which succeeds as soon as the listener binds and before the server
+  can answer, and that is the current lead rather than a confirmed
+  cause.
 
 - **A tier whose scoring tool could not run recorded a PASS.**
   `scan_transcript()` had three failure paths -- non-zero exit,

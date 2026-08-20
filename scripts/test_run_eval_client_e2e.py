@@ -89,6 +89,34 @@ SERVER_STARTUP_TIMEOUT_S = 15
 SESSION_REQUEST_TIMEOUT_S = 30
 
 
+def _kill_and_reap(proc: subprocess.Popen) -> None:
+    """Kill the server AND wait for it, so the process is reaped.
+
+    `proc.kill()` alone only sends the signal. Without a wait the child
+    is left unreaped and Python reports
+    `ResourceWarning: subprocess N is still running` at interpreter
+    exit -- observed in a real pipeline log. An unreaped server can
+    still hold its listening socket briefly, which is a candidate
+    explanation for this suite's intermittent hang at create_session
+    (9 hangs in 14 recorded runs): the next run binds a fresh port, but
+    a lingering process competing for local resources fits the
+    alternating pass/fail pattern better than a fixed environment
+    block. NOT CONFIRMED as the cause -- reaping is correct regardless,
+    and if the hang rate does not move afterwards the hypothesis is
+    wrong rather than the fix being pointless.
+
+    Also drains stdout: the pipe is what the failure paths read for
+    diagnostics, and leaving it unread on the success path is the
+    second half of the same leak.
+    """
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.wait(timeout=5)
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -187,7 +215,7 @@ class RunEvalClientE2ETests(unittest.TestCase):
             cwd=install_dir, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
-        self.addCleanup(proc.kill)
+        self.addCleanup(_kill_and_reap, proc)
 
         deadline = time.time() + SERVER_STARTUP_TIMEOUT_S
         while time.time() < deadline:

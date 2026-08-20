@@ -169,12 +169,30 @@ stage_lint() {
 }
 
 stage_test() {
-  local rc=0 t
+  local rc=0 t out
+  local ran=0 skipped_suites="" internal_skips=0
 
   for t in scripts/test_*.py; do
     [ -f "$t" ] || continue
     log "python3 $t"
-    python3 "$t" || rc=1
+    ran=$((ran + 1))
+    # Captured rather than streamed straight through so the summary can
+    # count unittest's OWN skips. A suite reporting "OK (skipped=2)"
+    # exits 0 and reads as a pass, which is how the e2e suite silently
+    # skipped itself in an image without node and a green run was
+    # reported for tests that never executed.
+    if out=$(python3 "$t" 2>&1); then
+      :
+    else
+      rc=1
+    fi
+    printf '%s\n' "$out"
+    case "$out" in
+      *skipped=*)
+        internal_skips=$((internal_skips + 1))
+        skipped_suites="${skipped_suites}${skipped_suites:+, }${t##*/}(internal)"
+        ;;
+    esac
   done
 
   for t in scripts/test_*.sh; do
@@ -184,11 +202,26 @@ stage_test() {
     # code reason, which is exactly the distinction a red stage should not blur.
     if [ "$t" = "scripts/test_ollama_model_switch.sh" ] && ! command -v jq >/dev/null 2>&1; then
       log "skipping $t: jq not installed"
+      skipped_suites="${skipped_suites}${skipped_suites:+, }${t##*/}(jq missing)"
       continue
     fi
     log "bash $t"
+    ran=$((ran + 1))
     bash "$t" || rc=1
   done
+
+  # THE COUNT GOES IN THE VERDICT, not only in the body. A stage whose
+  # summary line says PASS while suites quietly did not run is the same
+  # false signal this harness exists to catch, and it has already
+  # produced one wrong "all tests pass" report: the same `make test`
+  # skips different suites in the cicd-runner worker (no jq), the
+  # harness image (no node, no jq, no bash) and on the host (all
+  # present), so the outcome depends on where it ran and nothing said
+  # so.
+  if [ -n "$skipped_suites" ]; then
+    log "SUITES SKIPPED (did NOT run, not evidence of passing): ${skipped_suites}"
+  fi
+  log "test summary: ${ran} suite(s) executed, $( [ -n "$skipped_suites" ] && echo "$skipped_suites" || echo 'none skipped')"
 
   return "$rc"
 }
@@ -470,7 +503,12 @@ stage_build() {
 # while `containers` below does not.
 stage_client() {
   python3 scripts/e2e_session_probe.py
-  return $?
+  local rc=$?
+  # Declared so the manifest names it. The probe writes its outcome
+  # here whether it passed or failed, and the JSON carries the reply,
+  # timings and finish reason that the one-line stage verdict does not.
+  record_artifact "results/e2e-session"
+  return "$rc"
 }
 
 # Any HTTP answer means up; only a connection-level failure means not.
@@ -569,6 +607,50 @@ usage: tools/pipeline.sh [lint|test|build|verify|e2e|client|containers|exec-bits
 USAGE
 }
 
+# ARTIFACTS_WRITTEN accumulates every file a stage produces beyond this
+# run's own log. A stage that writes something appends to it; the
+# manifest at the end prints the lot.
+ARTIFACTS_WRITTEN=""
+
+record_artifact() {
+  # Call with a path a stage just wrote. Deliberately does not check the
+  # file exists: a stage claiming an artifact it failed to produce is
+  # itself worth seeing in the manifest, listed as missing.
+  ARTIFACTS_WRITTEN="${ARTIFACTS_WRITTEN}${ARTIFACTS_WRITTEN:+ }$1"
+}
+
+print_artifact_manifest() {
+  # THE POINT OF THIS FUNCTION. Everything above is tee'd to a log file
+  # that the caller never sees a path to -- a tool invocation returns
+  # stdout and stderr, and the reader then decides whether to go and
+  # open the log. In practice they do not: this run's own history has
+  # several rounds of a verdict being read from stdout while the log on
+  # disk carried tracebacks, resource warnings and a silently skipped
+  # suite that changed the conclusion.
+  #
+  # "Read all the logs" is a habit, and a habit sits off the path. The
+  # caller wants the result, so the result carries the list: naming
+  # every artifact HERE, in the output the caller cannot avoid reading,
+  # makes the full evidence reachable without anyone having to remember
+  # that it exists. Same placement rule this repo applies to gates --
+  # make it a property of the thing the actor already wants.
+  local f size
+  log ""
+  log "ARTIFACTS WRITTEN BY THIS RUN -- stdout above is a summary, these are the evidence:"
+  if [ -f "$LOG_FILE" ]; then
+    size=$(wc -c <"$LOG_FILE" 2>/dev/null || echo '?')
+    log "  $LOG_FILE (${size} bytes) -- full stdout+stderr of every stage, including tracebacks and warnings not shown above"
+  fi
+  for f in $ARTIFACTS_WRITTEN; do
+    if [ -e "$f" ]; then
+      size=$(wc -c <"$f" 2>/dev/null || echo '?')
+      log "  $f (${size} bytes)"
+    else
+      log "  $f (MISSING -- a stage reported writing this and it is not there)"
+    fi
+  done
+}
+
 main() {
   local target="${1:-all}"
 
@@ -600,9 +682,11 @@ main() {
   [ -n "$SKIPPED_STAGES" ] && log "SKIPPED:$SKIPPED_STAGES"
   if [ -n "$FAILED_STAGES" ]; then
     log "RESULT: FAILED$FAILED_STAGES"
+    print_artifact_manifest
     return 1
   fi
   log "RESULT: ALL PASS"
+  print_artifact_manifest
   return 0
 }
 

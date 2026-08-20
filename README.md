@@ -117,7 +117,7 @@ machine, in a sandbox, and in a CI worker carrying different toolchains.
 | Target | What it does |
 |---|---|
 | `make lint` | shellcheck, `py_compile`, JSON parse |
-| `make test` | every `scripts/test_*` suite |
+| `make test` | every `scripts/test_*` suite, reporting how many executed and naming any that did not |
 | `make verify` | repository invariants: the Compose resolver is the only call path, no host paths in tracked files, bind sources anchored to `HARNESS_ROOT`, no uncommitted file-mode changes |
 | `make e2e` | discovery against a live Ollama; skips when none is reachable |
 | `make client` | opens one session against a running server, sends `hi`, closes it, and writes the outcome to `results/e2e-session/`; skips when nothing answers |
@@ -129,6 +129,24 @@ machine, in a sandbox, and in a CI worker carrying different toolchains.
 which is an action to ask for rather than a side effect of running
 checks. It also leaves a stack it did not start running, so probing a
 server you already have up does not tear it down underneath you.
+
+### What a run tells you it wrote
+
+Every run ends with an `ARTIFACTS WRITTEN` manifest naming its own log
+file and size, plus any file a stage produced. The log carries the full
+stdout and stderr of every stage -- tracebacks, warnings and skips that
+the summary lines above it do not repeat -- and the manifest exists so
+that reading it is not a step anyone has to remember. A stage that
+declares an artifact which is not on disk has it listed as `MISSING`
+rather than omitted, so a stage claiming something it did not produce
+shows up rather than passing quietly.
+
+The test stage reports its own skips the same way. The same `make test`
+executes a different set of suites depending on what the environment
+carries: a worker without `jq` skips the model-switch tests, an image
+without Node skips the end-to-end suite, and a developer machine with
+both runs everything. Without the count next to the verdict, the
+greenest run is the one that tested least.
 
 A container lifecycle stage needs a Docker daemon and so cannot run in
 an unprivileged CI worker; it skips there and names the alternative.
