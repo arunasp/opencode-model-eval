@@ -56,6 +56,7 @@ test (the mock never triggered a tool call) -- extract_reply()'s
 with the now-confirmed type-discriminated-parts-array pattern, but that
 specific branch remains unverified against real tool-call output.
 """
+import argparse
 import json
 import os
 import re
@@ -69,9 +70,19 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-TASK_SUITE_DIR = Path("/task-suite")
-RESULTS_DIR = Path("/results")
-TOOLS_DIR = Path("/opt/harness/tools")
+# Container paths by default, overridable so the script is usable from
+# a plain checkout too. `--list` in particular needs the suite but no
+# container: a flag that only works inside the image is a flag most
+# callers never reach.
+TASK_SUITE_DIR = Path(os.environ.get("TASK_SUITE_DIR", "/task-suite"))
+if not TASK_SUITE_DIR.is_dir() and (Path(__file__).resolve().parent.parent / "task-suite").is_dir():
+    TASK_SUITE_DIR = Path(__file__).resolve().parent.parent / "task-suite"
+RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", "/results"))
+TOOLS_DIR = Path(os.environ.get("TOOLS_DIR", "/opt/harness/tools"))
+if not (TOOLS_DIR / "cvv_scan.py").is_file():
+    _repo_tools = Path(__file__).resolve().parent / "tools"
+    if (_repo_tools / "cvv_scan.py").is_file():
+        TOOLS_DIR = _repo_tools
 # Shared, read-only mount (docker-compose.yml/terraform's opencode_log
 # volume) -- opencode's OWN log file, the same one previously only
 # reachable via `docker exec ... cat`. Confirmed path from actual
@@ -327,6 +338,115 @@ def send_message(base_url: str, session_id: str, provider: str, model_id: str, t
     return http_post(base_url, f"/session/{session_id}/message", body, timeout=timeout)
 
 
+def session_progress(base_url: str, session_id: str, include_children: bool = True) -> dict:
+    """A snapshot of what the in-flight session has actually done.
+
+    Polling status alone reports "busy" and nothing else, so a tier
+    doing real work and a wedged client produce identical logs until
+    one of them stops. This reads the session's own message list --
+    which the server exposes while generation is still running,
+    confirmed live -- and reduces it to numbers that MOVE while work
+    is happening: message count, steps, tool calls, characters of
+    text, and token totals.
+
+    Returns {} on any failure. This is instrumentation: it must never
+    be the reason a tier fails, and a transient blip on the polling
+    connection is unrelated to the worker thread's own request.
+    """
+    try:
+        messages = http_get(base_url, f"/session/{session_id}/message", timeout=15)
+    except Exception:                                  # noqa: BLE001
+        return {}
+    if not isinstance(messages, list) or not messages:
+        return {}
+
+    steps = tools = text_chars = reasoning_chars = 0
+    last_tool = None
+    tokens: dict = {}
+    for message in messages:
+        for part in message.get("parts") or []:
+            kind = part.get("type")
+            if kind == "step-start":
+                steps += 1
+            elif kind == "tool":
+                tools += 1
+                state = part.get("state") or {}
+                last_tool = f"{part.get('tool')}:{state.get('status')}"
+            elif kind == "text":
+                text_chars += len(part.get("text") or "")
+            elif kind == "reasoning":
+                reasoning_chars += len(part.get("text") or "")
+        info = message.get("info") or {}
+        if info.get("tokens"):
+            tokens = info["tokens"]
+
+    snapshot = {"messages": len(messages), "steps": steps, "tools": tools,
+                "last_tool": last_tool, "text_chars": text_chars,
+                "reasoning_chars": reasoning_chars,
+                "input_tokens": tokens.get("input"), "output_tokens": tokens.get("output"),
+                "total_tokens": tokens.get("total")}
+
+    # THE PARENT GOES QUIET WHILE A SUBAGENT WORKS. The `task` tool
+    # dispatches into a CHILD session, so every counter above stops
+    # moving for the whole subagent run even though the eval is
+    # progressing normally -- measured live, 120s of "no change" while
+    # last_tool sat at task:running. Without following children, this
+    # probe reports a healthy subagent exactly as it reports a wedged
+    # client, which is the false signal it exists to remove.
+    if include_children:
+        try:
+            children = http_get(base_url, f"/session/{session_id}/children", timeout=15)
+        except Exception:                              # noqa: BLE001
+            children = []
+        child_snapshots = []
+        for child in children if isinstance(children, list) else []:
+            child_id = child.get("id") if isinstance(child, dict) else child
+            if not child_id:
+                continue
+            child_snapshot = session_progress(base_url, child_id, include_children=False)
+            if child_snapshot:
+                child_snapshots.append(child_snapshot)
+        if child_snapshots:
+            snapshot["children"] = len(child_snapshots)
+            for key in ("messages", "steps", "tools", "text_chars", "reasoning_chars"):
+                snapshot[key] += sum(c[key] for c in child_snapshots)
+            newest = child_snapshots[-1]
+            if newest.get("last_tool"):
+                snapshot["last_tool"] = f"subagent {newest['last_tool']}"
+    return snapshot
+
+
+def _format_progress(snapshot: dict) -> str:
+    if not snapshot:
+        return "no session detail available"
+    bits = [f"msgs {snapshot['messages']}", f"steps {snapshot['steps']}"]
+    if snapshot.get("children"):
+        bits.append(f"subagents {snapshot['children']}")
+    if snapshot["tools"]:
+        bits.append(f"tools {snapshot['tools']}")
+    if snapshot["last_tool"]:
+        bits.append(f"last {snapshot['last_tool']}")
+    bits.append(f"text {snapshot['text_chars']}ch")
+    if snapshot["reasoning_chars"]:
+        bits.append(f"reasoning {snapshot['reasoning_chars']}ch")
+    if snapshot["output_tokens"] is not None:
+        bits.append(f"tok in/out {snapshot['input_tokens']}/{snapshot['output_tokens']}")
+    return " | ".join(bits)
+
+
+def _progress_is_moving(previous: dict, current: dict) -> bool:
+    """Whether anything advanced between two snapshots.
+
+    Compared on the counters only. Unchanged counters across an
+    interval is what distinguishes a stalled client from a slow model
+    -- the case that was previously invisible until a hard stop.
+    """
+    if not previous or not current:
+        return True                                    # unknown, do not cry wolf
+    keys = ("messages", "steps", "tools", "text_chars", "reasoning_chars", "output_tokens")
+    return any(previous.get(k) != current.get(k) for k in keys)
+
+
 def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
                               quota_wait_threshold_s: float = QUOTA_WAIT_THRESHOLD_S,
                               poll_interval_s: float = STATUS_POLL_INTERVAL_S,
@@ -397,6 +517,7 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
     wait_start = time.time()
     last_progress_print = wait_start
     last_status_type = None
+    last_progress_snapshot: dict = {}
     while True:
         if done_event.wait(timeout=poll_interval_s):
             break  # worker finished (success or exception) during this poll window
@@ -450,16 +571,25 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
                   flush=True)
             last_status_type = status_type
             last_progress_print = now
-        elif status_type == "retry" and now - last_progress_print >= PROGRESS_PRINT_INTERVAL_S:
-            # Heartbeat while stuck in the same state -- without this,
-            # a single stalled/retrying tier produces zero stdout for
-            # up to QUOTA_WAIT_THRESHOLD_S (50min default), which is
-            # exactly the "no way to tail a slow run's live progress"
-            # gap this fixes.
-            events.append({"timestamp": now, **status})
-            print(f"[eval-client] still waiting on retry (elapsed {now - wait_start:.0f}s, "
-                  f"threshold {quota_wait_threshold_s:.0f}s, "
-                  f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))})", flush=True)
+        elif now - last_progress_print >= PROGRESS_PRINT_INTERVAL_S:
+            # Heartbeat while the status is UNCHANGED -- which is the
+            # normal case for a long tier, not just the retry case it
+            # originally covered. Without a snapshot of real session
+            # activity here, a tier doing genuine work and a client
+            # wedged on a dead socket print exactly the same thing
+            # (nothing) until one of them stops, so a client fault is
+            # invisible until a hard stop. The counters below move
+            # while work is happening; when they stop moving the line
+            # says so explicitly rather than leaving it to be inferred.
+            snapshot = session_progress(base_url, session_id)
+            moving = _progress_is_moving(last_progress_snapshot, snapshot)
+            stalled = "" if moving else "  [NO CHANGE since last interval]"
+            events.append({"timestamp": now, "type": "progress", "status": status_type,
+                           "elapsed_s": round(now - wait_start, 1),
+                           "moving": moving, **snapshot})
+            print(f"[eval-client] {status_type} {now - wait_start:.0f}s: "
+                  f"{_format_progress(snapshot)}{stalled}", flush=True)
+            last_progress_snapshot = snapshot
             last_progress_print = now
 
         if status_type == "retry":
@@ -1402,7 +1532,126 @@ def _summary_note_for_category(cat_report: dict) -> str:
     return " [stopped: CVV violation]"
 
 
-def main() -> int:
+def select_categories(categories: list[dict], spec: str | None) -> list[dict]:
+    """Narrow the ladder's categories to a caller-supplied selection.
+
+    `spec` is a comma-separated list of 1-based positions, ranges
+    ("1-3") or category ids. An unknown id or an out-of-range position
+    is a hard error rather than a silent omission -- a run that
+    quietly skipped a category the caller asked for would report a
+    clean sheet for tests that never executed.
+
+    None or empty selects everything, so the existing env-only
+    invocation is unchanged.
+    """
+    if not spec or not spec.strip():
+        return categories
+
+    by_id = {c["id"]: c for c in categories}
+    chosen: list[dict] = []
+    seen: set[str] = set()
+    for token in (t.strip() for t in spec.split(",") if t.strip()):
+        picked: list[dict] = []
+        if token in by_id:
+            picked = [by_id[token]]
+        elif "-" in token and all(p.strip().isdigit() for p in token.split("-", 1)):
+            low, high = (int(p) for p in token.split("-", 1))
+            if not (1 <= low <= high <= len(categories)):
+                raise ValueError(f"category range {token!r} outside 1-{len(categories)}")
+            picked = categories[low - 1:high]
+        elif token.isdigit():
+            index = int(token)
+            if not 1 <= index <= len(categories):
+                raise ValueError(f"category {index} outside 1-{len(categories)}")
+            picked = [categories[index - 1]]
+        else:
+            raise ValueError(f"unknown category {token!r}. Available: "
+                             + ", ".join(by_id))
+        for c in picked:
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                chosen.append(c)
+    return chosen
+
+
+def select_tiers(category: dict, spec: str | None) -> dict:
+    """Return a copy of `category` with its tiers narrowed.
+
+    Same spec grammar as select_categories, over 1-based tier numbers.
+    A range that exceeds this category's tier count is clamped rather
+    than an error, because categories legitimately differ in depth --
+    "--tiers 1-3" against a 2-tier category means "as far as it goes".
+
+    THE CEILING IS STILL WHAT WAS RUN, NOT WHAT EXISTS: a truncated
+    selection is recorded on the returned category so the report can
+    say a ceiling was bounded by the selection rather than by the
+    model's ability. Reporting "ceiling tier 1" from a one-tier run as
+    though the model failed tier 2 would be a fabricated result.
+    """
+    tiers = category["tiers"]
+    if not spec or not spec.strip():
+        return category
+
+    keep: list[dict] = []
+    seen: set[int] = set()
+    for token in (t.strip() for t in spec.split(",") if t.strip()):
+        if "-" in token and all(p.strip().isdigit() for p in token.split("-", 1)):
+            low, high = (int(p) for p in token.split("-", 1))
+        elif token.isdigit():
+            low = high = int(token)
+        else:
+            raise ValueError(f"unparseable tier selection {token!r}")
+        if low < 1:
+            raise ValueError(f"tier selection {token!r} must start at 1 or higher")
+        for index in range(low, min(high, len(tiers)) + 1):
+            if index not in seen:
+                seen.add(index)
+                keep.append(tiers[index - 1])
+
+    narrowed = dict(category)
+    narrowed["tiers"] = keep
+    narrowed["tier_selection"] = spec
+    narrowed["tiers_available"] = len(tiers)
+    return narrowed
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="run_eval_client.py",
+        description="Run the CVV test ladder against one model through an "
+                    "opencode server. Model and server come from the "
+                    "environment (OPENCODE_MODEL_PROVIDER, OPENCODE_MODEL_ID, "
+                    "OPENCODE_SERVER_URL); the flags below narrow WHAT runs.")
+    parser.add_argument("--categories", default=os.environ.get("OPENCODE_EVAL_CATEGORIES"),
+                        help="comma-separated category ids, 1-based positions or "
+                             "ranges (e.g. '1,3-4' or 'coding,reasoning'). "
+                             "Default: every category.")
+    parser.add_argument("--tiers", default=os.environ.get("OPENCODE_EVAL_TIERS"),
+                        help="comma-separated 1-based tier numbers or ranges "
+                             "(e.g. '1' or '1-2'), applied to every selected "
+                             "category. Default: every tier.")
+    parser.add_argument("--list", action="store_true",
+                        help="print the ladder's categories and tier counts, then exit")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.list:
+        # Deliberately before the model-environment check: listing what
+        # the ladder contains is how a caller finds the ids to pass to
+        # --categories, and needs no model.
+        path = TASK_SUITE_DIR / "test_ladder.json"
+        if not path.exists():
+            print(f"FATAL: {path} not found", file=sys.stderr)
+            return 1
+        with open(path) as f:
+            listing = json.load(f)
+        for position, category in enumerate(listing["categories"], start=1):
+            print(f"{position}. {category['id']} ({len(category['tiers'])} tiers)")
+        return 0
+
     base_url = os.environ.get("OPENCODE_SERVER_URL", "http://server:4096")
     # 4096 is THIS project's chosen fixed port, set explicitly when
     # starting `opencode serve --port 4096 --hostname 0.0.0.0` in the
@@ -1427,6 +1676,18 @@ def main() -> int:
         return 1
     with open(ladder_path) as f:
         ladder = json.load(f)
+
+    try:
+        selected = [select_tiers(c, args.tiers)
+                    for c in select_categories(ladder["categories"], args.categories)]
+    except ValueError as e:
+        print(f"FATAL: {e}", file=sys.stderr)
+        return 1
+    if not selected or not any(c["tiers"] for c in selected):
+        print("FATAL: selection matched no tiers", file=sys.stderr)
+        return 1
+    ladder = dict(ladder)
+    ladder["categories"] = selected
 
     setup_message = ladder["setup_turn"]
     # Confirmed live: provider ("local/ollama") has its own embedded "/"
@@ -1481,6 +1742,16 @@ def main() -> int:
 
     _log(f"target server: {base_url}")
     _log(f"model under test: {provider}/{model_id}")
+    if args.categories or args.tiers:
+        # Announced HERE, after the tee is installed -- printing it at
+        # selection time sent it to the console only, so the run's own
+        # eval_client.log carried no record that it was partial. An
+        # announcement that misses the artifact it is about is the
+        # same defect as a ceiling from a check that never ran.
+        summary = ", ".join(f"{c['id']}[{len(c['tiers'])}/"
+                            f"{c.get('tiers_available', len(c['tiers']))} tiers]"
+                            for c in ladder["categories"])
+        _log(f"PARTIAL RUN -- selection: {summary}")
 
     warm_up_local_model(base_url, provider, model_id)
 
