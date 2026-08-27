@@ -1,13 +1,37 @@
 x-harness-defaults: &harness-defaults
+  # Explicit image name, matching what terraform/main.tf already declares
+  # for the same stage. Without it Compose derives one from the project
+  # directory and the service name, which is why discover/eval/
+  # git-workspace each carried their own copy of an identical image, and
+  # why the derived name changes shape between the v1 and v2 CLIs (an
+  # underscore against a hyphen -- see existing_server_backend()'s grep).
+  image: opencode-model-eval-harness:latest
+  # nproc: RLIMIT_NPROC is enforced per real uid system-wide, not per
+  # container, and this daemon's own default is 128:256 -- measured, not
+  # assumed. Every exec after entrypoint.sh's uid switch fails with
+  # EAGAIN at that ceiling, so this is a prerequisite of the drop, not a
+  # tuning knob.
+  ulimits:
+    nproc: 8192
   build:
     context: .
     dockerfile: Dockerfile
+    # Explicit target. Without it this anchor built whatever the LAST
+    # stage in the Dockerfile happens to be, and that stopped being
+    # `harness` when the `jupyter` stage was appended after it -- so
+    # discover and eval were silently building and running the jupyter
+    # image, jupyterlab and all.
+    target: harness
     args:
       OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
       # Pin this to a resolved digest (OPENCODE_REF=sha256:<digest>) once
       # you've verified it against your own `docker inspect` output — see
       # README for why "latest" is only a placeholder default.
       OPENCODE_REF: ${OPENCODE_REF:-latest}
+      # Bakes a passwd entry for this host's uid:gid into the image, so
+      # entrypoint.sh's drop finds it already present.
+      WORKER_UID: ${HOST_UID:-1000}
+      WORKER_GID: ${HOST_GID:-1000}
   # No network egress restriction is applied here at the compose level —
   # the provider API host still needs outbound access. Add a network
   # policy at the host/firewall layer if you want per-model egress scoping.
@@ -20,6 +44,10 @@ services:
   # Docker build arg. Started once, stays up, every eval run and every
   # model under test talks to this same container over HTTP.
   server:
+    image: opencode-model-eval-server:latest
+    container_name: opencode-model-eval-server
+    ulimits:
+      nproc: 8192
     build:
       context: .
       dockerfile: Dockerfile
@@ -27,6 +55,8 @@ services:
       args:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
+        WORKER_UID: ${HOST_UID:-1000}
+        WORKER_GID: ${HOST_GID:-1000}
     command: ["serve"]
     # 49605: this is the HOST-published port -- 4096 (container-internal,
     # right side) risked colliding with Axiom's own separate opencode
@@ -55,6 +85,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      # Read by entrypoint.sh, which starts as root, creates a matching
+      # passwd entry if the baked-in one does not fit, then drops to this
+      # uid:gid before exec'ing anything -- so files it writes to a bind
+      # mount are owned by the host user rather than root.
+      WORKER_UID: "${HOST_UID:-1000}"
+      WORKER_GID: "${HOST_GID:-1000}"
       OPENCODE_OLLAMA_BASE_URL: "${OPENCODE_OLLAMA_BASE_URL:-http://host.docker.internal:11434/v1}"
       OPENCODE_OLLAMA_TAGS_URL: "${OPENCODE_OLLAMA_TAGS_URL:-http://host.docker.internal:11434/api/tags}"
       # session_reaper.py -- server-side TTL for sessions an abruptly
@@ -102,6 +138,13 @@ services:
   discover:
     <<: *harness-defaults
     entrypoint: ["python3", "/usr/local/bin/discover_and_select_model.py"]
+    # This service overrides entrypoint.sh entirely, so it never reaches
+    # the uid drop -- `user:` is how it writes to ./results as the host
+    # user instead. The passwd entry the numeric uid needs is baked into
+    # the image at build time, which is what makes a bare `user:` safe
+    # here (see the docker-run-as-host-user skill for why it is not,
+    # generally).
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     volumes:
       - ./auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
@@ -156,6 +199,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      WORKER_UID: "${HOST_UID:-1000}"
+      WORKER_GID: "${HOST_GID:-1000}"
       OPENCODE_SERVER_URL: "http://server:4096"
       OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
       # Empty default, not a required (:?) interpolation -- :? is
@@ -212,8 +257,12 @@ services:
       args:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
+        WORKER_UID: ${HOST_UID:-1000}
+        WORKER_GID: ${HOST_GID:-1000}
     entrypoint: ["/usr/local/bin/entrypoint.sh", "serve"]
     environment:
+      WORKER_UID: "${HOST_UID:-1000}"
+      WORKER_GID: "${HOST_GID:-1000}"
       OPENCODE_CONFIG: /opt/harness/opencode.git-workspace.json
       OPENCODE_SERVE_PORT: "4096"
     # Confirmed missing: without this, nothing could reach this
@@ -256,6 +305,10 @@ services:
   # nobody needs to browse directly, but wrong for notebooks someone
   # actually wants to find, open, or back up on the host.
   jupyter:
+    image: opencode-model-eval-jupyter:latest
+    container_name: opencode-model-eval-jupyter
+    ulimits:
+      nproc: 8192
     build:
       context: .
       dockerfile: Dockerfile
@@ -263,6 +316,13 @@ services:
       args:
         OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
         OPENCODE_REF: ${OPENCODE_REF:-latest}
+        WORKER_UID: ${HOST_UID:-1000}
+        WORKER_GID: ${HOST_GID:-1000}
+    environment:
+      # The role that writes to a host bind mount most often, once per
+      # notebook save.
+      WORKER_UID: "${HOST_UID:-1000}"
+      WORKER_GID: "${HOST_GID:-1000}"
     ports:
       - "${JUPYTER_PORT:-8888}:8888"
     volumes:

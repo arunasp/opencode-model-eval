@@ -58,6 +58,17 @@ source scripts/lib/host-model-picker.sh
 readonly IMAGE="opencode-model-eval-harness:latest"
 readonly NETWORK="opencode-model-eval-net"
 readonly LOG_VOLUME="opencode-model-eval-log"
+
+# These containers write into results/ on the host. Terraform sets the
+# same values from var.host_uid/var.host_gid, and the Makefile exports
+# them for the Compose path -- this script is a third, independent entry
+# point that reaches neither, so it derives them itself.
+HOST_UID="${HOST_UID:-$(id -u)}"
+HOST_GID="${HOST_GID:-$(id -g)}"
+readonly HOST_UID HOST_GID
+# See terraform/variables.tf's container_nproc_limit for why this is a
+# prerequisite of running as anything other than root on this daemon.
+readonly NPROC_LIMIT="nproc=8192:8192"
 HARNESS_ROOT="$(pwd)"
 readonly HARNESS_ROOT
 
@@ -94,6 +105,12 @@ mkdir -p "${discover_out_dir}"
 # auto-select) are appended by each caller below.
 discover_base_cmd=(docker run --rm
   --entrypoint python3
+  # Replaces entrypoint.sh, so this never reaches the privilege drop --
+  # --user is what keeps results/discovered owned by the invoking user.
+  # Safe as a bare numeric pair only because the image bakes a matching
+  # passwd entry at build time.
+  --user "${HOST_UID}:${HOST_GID}"
+  --ulimit "${NPROC_LIMIT}"
   -v "${HARNESS_ROOT}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro"
   -v "${discover_out_dir}:/results"
   # Read-write, not read-only: `opencode models --verbose` here is a
@@ -208,6 +225,9 @@ run docker run --rm \
   --entrypoint /usr/local/bin/entrypoint.sh \
   --network "${NETWORK}" \
   --add-host host.docker.internal:host-gateway \
+  --ulimit "${NPROC_LIMIT}" \
+  -e "WORKER_UID=${HOST_UID}" \
+  -e "WORKER_GID=${HOST_GID}" \
   -e "OPENCODE_SERVER_URL=http://server:4096" \
   -e "OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}" \
   -e "OPENCODE_MODEL_PROVIDER=${provider}" \

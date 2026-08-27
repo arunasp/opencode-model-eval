@@ -49,10 +49,19 @@ USER root
 # directly on Cyberdyne before auth.json is even mounted in. Dropped
 # entirely, not moved to harness -- confirmed via repo-wide grep
 # before removing it, not assumed unused.
+# setpriv: entrypoint.sh drops from root to WORKER_UID/WORKER_GID with
+# it, so files written to the bind mounts (./results, ./notebooks) are
+# owned by the host user instead of root. Alpine's busybox ships a
+# setpriv APPLET carrying none of the flags needed (--reuid/--regid/
+# --clear-groups), so the real one has to be installed; `apk add
+# setpriv` replaces the busybox symlink at /bin/setpriv in place, and
+# is 3 packages / 0.1 MiB, against 34 packages / 5.3 MiB for the whole
+# util-linux metapackage. Measured on this base, not estimated.
+# Debian's util-linux is not split the same way, hence the two names.
 RUN if command -v apk >/dev/null 2>&1; then \
-      apk add --no-cache ca-certificates python3; \
+      apk add --no-cache ca-certificates python3 setpriv; \
     elif command -v apt-get >/dev/null 2>&1; then \
-      apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 \
+      apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 util-linux \
       && rm -rf /var/lib/apt/lists/*; \
     else \
       echo "FATAL: no supported package manager (apk/apt-get) found in base image" >&2; \
@@ -64,12 +73,32 @@ RUN if command -v apk >/dev/null 2>&1; then \
 # ~/.local/share/opencode/auth.json and ~/.config/opencode resolve to,
 # which otherwise depends on an unverified base-image convention.
 ENV HOME=/home/harness
+
+# Baked-in harness user, matching this deployment's own HOST_UID/
+# HOST_GID, same shape as cicd_runner's worker/Dockerfile. Defaults to
+# 1000:1000 (the real, observed uid:gid on this host) but stays a build
+# arg, so the image can be rebuilt for a different host user. It also
+# means entrypoint.sh's getent check finds the user already present and
+# skips its runtime-creation branch entirely in the common case.
+ARG WORKER_UID=1000
+ARG WORKER_GID=1000
+RUN if command -v addgroup >/dev/null 2>&1 && ! command -v groupadd >/dev/null 2>&1; then \
+      addgroup -g "${WORKER_GID}" harness \
+      && adduser -u "${WORKER_UID}" -G harness -h "${HOME}" -s /bin/sh -D harness; \
+    else \
+      groupadd --gid "${WORKER_GID}" harness \
+      && useradd --uid "${WORKER_UID}" --gid "${WORKER_GID}" --home-dir "${HOME}" \
+           --shell /bin/sh --no-create-home harness; \
+    fi
+
+# Owned by the harness user rather than world-writable. The previous
+# `chmod -R 0777` did nothing for the case it was meant to cover:
+# /results and /notebooks are bind mounts at runtime, and a mount
+# overlays the image directory's mode entirely. What it did cover was
+# ${HOME}, which the entrypoint writes opencode.runtime.json into after
+# the drop -- that is what the chown below is for.
 RUN mkdir -p "${HOME}/.local/share/opencode" "${HOME}/.config/opencode" /task-suite /results \
-    && chmod -R 0777 "${HOME}" /results
-# NOTE: 0777 on the harness home dir is a deliberate relaxation, not an
-# oversight — this image may run under an arbitrary/overridden UID via
-# `docker-compose run --user`, and this is a local evaluation tool, not a
-# multi-tenant service. Tighten this if you run it anywhere less trusted.
+    && chown -R "${WORKER_UID}:${WORKER_GID}" "${HOME}" /results
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
@@ -112,6 +141,12 @@ CMD ["serve"]
 FROM server AS harness
 
 USER root
+
+# Re-declared: an ARG's scope ends at its own stage, so the values used
+# by the chown lines below would expand empty without this, even though
+# the `server` stage above already declared them.
+ARG WORKER_UID=1000
+ARG WORKER_GID=1000
 
 # Redeclared explicitly rather than relying on inheritance from
 # `server` -- found live on Cyberdyne that invocations of THIS stage's
@@ -211,7 +246,7 @@ RUN pip install --break-system-packages --no-cache-dir onnxruntime tokenizers nu
             "images and/or Python 3.14 -- onnxruntime has no published" \
             "wheel for either (microsoft/onnxruntime#25737, open)." >&2
 
-RUN mkdir -p /task-suite /results && chmod -R 0777 /results
+RUN mkdir -p /task-suite /results && chown -R "${WORKER_UID}:${WORKER_GID}" /results
 
 COPY scripts/discover_and_select_model.py /usr/local/bin/discover_and_select_model.py
 COPY scripts/run_eval_client.py /usr/local/bin/run_eval_client.py
@@ -231,7 +266,8 @@ RUN chmod 0755 /usr/local/bin/discover_and_select_model.py /usr/local/bin/run_ev
 # the runtime or the model files are the thing that's missing.
 COPY scripts/fetch_embedding_model.sh /usr/local/bin/fetch_embedding_model.sh
 RUN chmod 0755 /usr/local/bin/fetch_embedding_model.sh \
-    && /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
+    && /usr/local/bin/fetch_embedding_model.sh "${HOME}/.cache/axiom-cvv/all-minilm-l6-v2" \
+    && chown -R "${WORKER_UID}:${WORKER_GID}" "${HOME}/.cache"
 ENV AXIOM_CVV_EMBEDDING_MODEL_DIR="${HOME}/.cache/axiom-cvv/all-minilm-l6-v2"
 
 # CMD is inherited from `server` (["serve"]) -- eval-client/discover
@@ -253,27 +289,26 @@ FROM harness AS jupyter
 
 USER root
 
+# Same re-declaration as the harness stage above, same reason.
+ARG WORKER_UID=1000
+ARG WORKER_GID=1000
+
 RUN pip install --break-system-packages --no-cache-dir jupyterlab
 
-RUN mkdir -p /notebooks && chmod -R 0777 /notebooks
+RUN mkdir -p /notebooks && chown -R "${WORKER_UID}:${WORKER_GID}" /notebooks
 WORKDIR /notebooks
 
 EXPOSE 8888
-# ENTRYPOINT [] clears the inherited /usr/local/bin/entrypoint.sh from
-# the server/harness stages -- CMD alone does NOT override an inherited
-# ENTRYPOINT, it only supplies its arguments. Without this, the actual
-# command run was `entrypoint.sh jupyter lab --ip=0.0.0.0 ...`, and
-# entrypoint.sh's dispatcher only recognizes 'serve'/'eval-client' as
-# $1 -- 'jupyter' hit its "unknown mode" branch and exited 1
-# immediately, before Jupyter Lab ever started. Confirmed via a real
-# `terraform apply` log showing the container's own exit_code=1 before
-# this fix.
-ENTRYPOINT []
-# --no-browser: there's no browser inside this container to open.
-# --ip=0.0.0.0: opencode's own default-loopback caveat elsewhere in
-# this file applies here too -- Jupyter's own default is also
-# loopback-only, unreachable from outside the container otherwise.
-# NotebookApp.token left to Jupyter's own auto-generated default rather
-# than disabled outright -- see docker-compose.yml/terraform's comments
-# on how the token is surfaced to whoever's starting this.
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root"]
+# This stage used to clear the inherited ENTRYPOINT (`ENTRYPOINT []`)
+# and call `jupyter lab` straight from CMD, because entrypoint.sh only
+# recognized 'serve'/'eval-client' and 'jupyter' hit its unknown-mode
+# branch. entrypoint.sh now has a real jupyter mode, so the entrypoint
+# is inherited again -- which is what puts this stage back on the
+# privilege-drop path. It matters most here: jupyter is the role that
+# writes to a host bind mount (./notebooks) on every notebook save, so
+# bypassing the drop is exactly how those files ended up root-owned.
+# The flags that used to live in CMD now live in entrypoint.sh's
+# jupyter mode, including the removal of --allow-root, which would
+# otherwise mask a drop that silently failed.
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["jupyter"]

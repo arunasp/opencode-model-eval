@@ -86,6 +86,18 @@ help:
 OPENCODE_GLOBAL_CONFIG ?= $(HOME)/.config/opencode/opencode.json
 export OPENCODE_GLOBAL_CONFIG
 
+# The uid:gid every container runs as, so anything written to ./results
+# or ./notebooks is owned by the invoking user rather than root. Same ?=
+# and export treatment as OPENCODE_GLOBAL_CONFIG above, and the same
+# limitation applies: a default that lives in one entry point is not a
+# default. Anything driving compose directly (an orchestrator, CI, a
+# bare `docker compose`) gets these from .env instead, and falls back to
+# 1000:1000 in the compose file if neither is set.
+HOST_UID ?= $(shell id -u)
+HOST_GID ?= $(shell id -g)
+export HOST_UID
+export HOST_GID
+
 # Compose is either the v2 `docker compose` subcommand or the v1
 # `docker-compose` binary, and this repo has to run on machines
 # carrying either. scripts/compose.sh picks whichever is present at

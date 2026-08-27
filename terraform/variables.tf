@@ -16,6 +16,24 @@ variable "opencode_ref" {
   default     = "latest"
 }
 
+variable "host_uid" {
+  description = "uid every container runs as, passed both as a build arg (baking a matching passwd entry into the image) and as WORKER_UID at runtime (read by entrypoint.sh, which drops privileges before exec'ing anything). Without it the containers run as root and everything they write to a bind-mounted host path -- results/, notebooks/ -- is left root-owned. Compose reads the same value from HOST_UID; Terraform has no equivalent of the Makefile's `id -u`, so this default has to be stated. 1000 is the observed uid on Cyberdyne."
+  type        = number
+  default     = 1000
+}
+
+variable "host_gid" {
+  description = "gid counterpart to var.host_uid. See its description."
+  type        = number
+  default     = 1000
+}
+
+variable "container_nproc_limit" {
+  description = "nproc ulimit applied to every container. RLIMIT_NPROC is enforced per real uid system-wide rather than per container, and this daemon's own default was measured at 128:256 -- low enough that every exec following entrypoint.sh's uid switch fails with EAGAIN (`Resource temporarily unavailable`) for any binary. This is a prerequisite of the privilege drop, not a tuning knob; cicd_runner passes the same 8192 to every worker for the same reason."
+  type        = number
+  default     = 8192
+}
+
 variable "serve_port" {
   description = "Host port mapped to the server container's opencode serve port (4096 internal, fixed by this project -- not opencode's own default, which is a random port on 127.0.0.1 only. See entrypoint.sh. Default changed from 4096 to 49604 -- Cyberdyne also runs Axiom's own separate opencode serve instance, and 4096 risked colliding with it. Picked from IANA's dynamic/private port range (49152-65535, RFC 6335); not verified against Axiom's actual chosen port, since that's outside this repo's config. Deliberately DIFFERENT from docker-compose.yml's own default (49605) -- confirmed live that sharing one default meant Compose and Terraform could never both be up at once without a real port-bind collision, even though README's \"Two deployment paths\" section already frames both as legitimately simultaneous."
   type        = number

@@ -98,6 +98,8 @@ resource "docker_image" "server" {
     build_args = {
       OPENCODE_IMAGE = var.opencode_image
       OPENCODE_REF   = var.opencode_ref
+      WORKER_UID     = tostring(var.host_uid)
+      WORKER_GID     = tostring(var.host_gid)
     }
   }
 
@@ -120,9 +122,16 @@ resource "docker_image" "harness" {
   build {
     context    = var.harness_root
     dockerfile = "Dockerfile"
+    # Explicit target. Without it this builds whatever the LAST stage in
+    # the Dockerfile is, and that stopped being `harness` when the
+    # `jupyter` stage was appended after it -- the same latent defect
+    # docker-compose.yml's own anchor carried.
+    target     = "harness"
     build_args = {
       OPENCODE_IMAGE = var.opencode_image
       OPENCODE_REF   = var.opencode_ref
+      WORKER_UID     = tostring(var.host_uid)
+      WORKER_GID     = tostring(var.host_gid)
     }
   }
 
@@ -161,7 +170,19 @@ resource "docker_container" "server" {
     ip   = "host-gateway"
   }
 
+  # Read by entrypoint.sh, which starts as root, ensures a passwd entry
+  # for this uid exists, then drops privileges before exec'ing anything.
+  # The nproc ulimit is what makes that drop able to exec at all on this
+  # daemon -- see var.container_nproc_limit.
+  ulimit {
+    name = "nproc"
+    soft = var.container_nproc_limit
+    hard = var.container_nproc_limit
+  }
+
   env = [
+    "WORKER_UID=${var.host_uid}",
+    "WORKER_GID=${var.host_gid}",
     "OPENCODE_OLLAMA_BASE_URL=${var.opencode_ollama_base_url}",
     "OPENCODE_OLLAMA_TAGS_URL=${var.ollama_tags_url}",
     "OPENCODE_REAPER_ENABLED=${var.session_reaper_enabled}",
@@ -234,6 +255,20 @@ resource "docker_container" "discover" {
   # To select a specific model instead of running discovery:
   # command = ["--model", "zhipu/glm-5.2"]
 
+  # This container replaces entrypoint.sh outright, so it never reaches
+  # the privilege drop -- `user` is what keeps its writes to
+  # results/discovered owned by the host user. A bare numeric uid is
+  # only safe here because the image bakes a matching passwd entry at
+  # build time; without one the kernel's own execve() fails with EAGAIN
+  # for every binary (see the docker-run-as-host-user skill).
+  user = "${var.host_uid}:${var.host_gid}"
+
+  ulimit {
+    name = "nproc"
+    soft = var.container_nproc_limit
+    hard = var.container_nproc_limit
+  }
+
   must_run = false
   attach   = false
   rm       = false
@@ -297,7 +332,15 @@ resource "docker_container" "git_workspace" {
 
   entrypoint = ["/usr/local/bin/entrypoint.sh", "serve"]
 
+  ulimit {
+    name = "nproc"
+    soft = var.container_nproc_limit
+    hard = var.container_nproc_limit
+  }
+
   env = [
+    "WORKER_UID=${var.host_uid}",
+    "WORKER_GID=${var.host_gid}",
     "OPENCODE_CONFIG=/opt/harness/opencode.git-workspace.json",
   ]
 
@@ -348,11 +391,14 @@ resource "docker_image" "jupyter" {
     build_args = {
       OPENCODE_IMAGE = var.opencode_image
       OPENCODE_REF   = var.opencode_ref
+      WORKER_UID     = tostring(var.host_uid)
+      WORKER_GID     = tostring(var.host_gid)
     }
   }
 
   triggers = {
     dockerfile_sha1 = filesha1("${var.harness_root}/Dockerfile")
+    entrypoint_sha1 = filesha1("${var.harness_root}/entrypoint.sh")
   }
 }
 
@@ -373,7 +419,15 @@ resource "docker_container" "jupyter" {
     ip   = "host-gateway"
   }
 
+  ulimit {
+    name = "nproc"
+    soft = var.container_nproc_limit
+    hard = var.container_nproc_limit
+  }
+
   env = [
+    "WORKER_UID=${var.host_uid}",
+    "WORKER_GID=${var.host_gid}",
     "OLLAMA_BASE_URL=${var.ollama_native_base_url}",
     "OLLAMA_TAGS_URL=${var.ollama_tags_url}",
     "OPENCODE_BASE_URL=http://${one(docker_container.server.host[*].host)}:${one(docker_container.server.ports[*].external)}",
