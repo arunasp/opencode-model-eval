@@ -6,12 +6,34 @@ automatically.
 
 ## Setup
 
-**First, export `OPENCODE_GLOBAL_CONFIG`** so every container can find your
-real opencode global config:
+How you supply configuration depends on how you invoke Compose. See
+[REQUIREMENTS.md](REQUIREMENTS.md#two-ways-compose-gets-invoked) for the
+full description of both paths.
+
+**At a shell**, export `OPENCODE_GLOBAL_CONFIG` so every container can
+find your real opencode global config:
 
 ```bash
 export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
 ```
+
+The Makefile defaults this the same way, along with `HOST_UID` and
+`HOST_GID`, so `make server-up` works without the export too.
+
+**When anything other than the Makefile drives Compose** -- an
+orchestrator, a CI job, a bare `docker compose` -- none of those
+defaults apply, and a `.env` beside the compose file is required:
+
+```bash
+cp .env.example .env      # then set the paths for this machine
+```
+
+The containers run as `HOST_UID:HOST_GID` rather than root, so anything
+they write to `results/` and `notebooks/` stays yours. Set
+`HARNESS_ROOT` in `.env` as well if the caller sees the filesystem
+differently from the Docker daemon; get its value with
+`make print-harness-root`, which derives it from where the Makefile is
+rather than from your shell's working directory.
 
 This project no longer maintains its own static list of local Ollama
 models — `config/opencode.base.json` and `config/opencode.git-workspace.json`
@@ -67,9 +89,15 @@ mounts it — hit live during this project's own setup, every
 "credentials not found" because the mount target was a phantom
 directory, not a missing file. `ensure-auth-data.sh` detects that
 exact case and clears it via `rmdir` (refuses on anything non-empty,
-won't delete real content), then runs the real extraction — same
+won't delete real content), then runs the real extraction -- same
 script, same effect as running `extract-opencode-key.sh` directly, plus
 the one-time phantom-directory cleanup this specific failure mode needs.
+
+A missing file is not the only way to reach that state. A bind source
+that resolves to a path the Docker daemon cannot see produces the same
+empty directory, which is why every source in the compose file goes
+through `${HARNESS_ROOT:-.}` and why `HARNESS_ROOT` matters as soon as
+something other than your own shell drives Compose.
 
 The structured test ladder ships with this repo, populated:
 `task-suite/test_ladder.json` — 9 categories, 25 tiers, escalating

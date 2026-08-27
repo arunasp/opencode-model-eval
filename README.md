@@ -13,6 +13,7 @@ self-correction) rather than just capturing one-off terminal transcripts.
 
 - [Requirements](REQUIREMENTS.md) — what you need installed, and why
 - [Install & Run](INSTALL.md) — setup, running the harness, reading results
+- [Checks and container lifecycle](#checks-and-container-lifecycle) — the staged pipeline
 - [Changelog](CHANGELOG.md) — what's changed, fixed, and still unverified
 - [Contributing](CONTRIBUTING.md)
 - Governance: [`docs/CODEGEN.md`](docs/CODEGEN.md), [`docs/BRANCHING.md`](docs/BRANCHING.md),
@@ -89,6 +90,35 @@ service definitions where Terraform's own resources don't need to
 diverge from them. See [Known gaps](#known-gaps-not-yet-handled-by-this-harness)
 for the one deliberate asymmetry between them (cloud eval runs are
 outside Terraform's state entirely, on both paths).
+
+## Checks and container lifecycle
+
+`tools/pipeline.sh` holds the staged checks, each also reachable as a
+make target. A stage that exits 2 is reported as SKIPPED rather than
+failed, which is how the same pipeline runs unchanged on a developer
+machine, in a sandbox, and in a CI worker carrying different toolchains.
+
+| Target | What it does |
+|---|---|
+| `make lint` | shellcheck, `py_compile`, JSON parse |
+| `make test` | every `scripts/test_*` suite |
+| `make verify` | repository invariants: the Compose resolver is the only call path, no host paths in tracked files, bind sources anchored to `HARNESS_ROOT`, no uncommitted file-mode changes |
+| `make e2e` | discovery against a live Ollama; skips when none is reachable |
+| `make client` | opens one session against a running server, sends `hi`, closes it, and writes the outcome to `results/e2e-session/`; skips when nothing answers |
+| `make containers` | builds the image, starts the server, waits for it to answer, runs the client probe, then stops it again |
+| `make exec-bits` | restores executable bits recorded in the index |
+| `make ci` | lint, test, verify, e2e and client |
+
+`containers` is not part of `ci`: it starts and stops real containers,
+which is an action to ask for rather than a side effect of running
+checks. It also leaves a stack it did not start running, so probing a
+server you already have up does not tear it down underneath you.
+
+A container lifecycle stage needs a Docker daemon and so cannot run in
+an unprivileged CI worker; it skips there and names the alternative.
+An orchestrator holding the socket drives the same lifecycle through
+Compose directly, which is why a bare `up` starts only `server` (see
+[REQUIREMENTS.md](REQUIREMENTS.md#two-ways-compose-gets-invoked)).
 
 ## Test ladder
 

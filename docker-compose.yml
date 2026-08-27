@@ -13,8 +13,11 @@
 # Only something driving compose from elsewhere needs to set it, in
 # .env, to this directory's absolute host path.
 #
-# Derive that value with `pwd`, never `realpath` or `readlink -f`. The
-# same file is resolved in three other places -- the extraction scripts
+# Derive that value with `make print-harness-root`, which reads it from
+# where the Makefile is. Never `realpath` or `readlink -f`, and not a
+# bare `pwd` either -- that is the caller's working directory, which is
+# only the right answer by coincidence. The same file is resolved in
+# three other places -- the extraction scripts
 # (`cd "$(dirname "${BASH_SOURCE[0]}")" && pwd` plus a literal `/../`),
 # Terraform's `abspath()`, and here -- and none of those resolve
 # symlinks. A resolved path that disagrees with them is a different

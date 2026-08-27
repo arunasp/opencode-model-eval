@@ -44,7 +44,7 @@
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
         tf-jupyter-up tf-jupyter-down \
-        lint test verify e2e ci client containers exec-bits
+        lint test verify e2e ci client containers exec-bits print-harness-root
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -78,6 +78,7 @@ help:
 	@echo "make client                        one 'hi' session against a running server, skips if none answers"
 	@echo "make containers                    build, start, probe and stop the stack (needs a docker daemon)"
 	@echo "make exec-bits                     restore executable bits the Filesystem connector drops"
+	@echo "make print-harness-root            print the value to put in .env as HARNESS_ROOT"
 	@echo "make ci                            lint, test, verify, e2e and client in one run"
 
 # Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
@@ -100,6 +101,21 @@ HOST_UID ?= $(shell id -u)
 HOST_GID ?= $(shell id -g)
 export HOST_UID
 export HOST_GID
+
+# This directory's absolute path, used as the prefix for every
+# bind-mount source in docker-compose.yml. Derived from where this
+# Makefile is, not from the caller's working directory: `make -f
+# /path/to/Makefile` and `make -C /path` both resolve correctly, where
+# $(CURDIR) or a `pwd` in a recipe would give whatever directory the
+# caller happened to be standing in.
+#
+# $(abspath) rather than $(realpath): it normalises lexically without
+# resolving symlinks, matching what the auth extraction scripts produce
+# (`cd "$(dirname "$BASH_SOURCE")" && pwd`) and what Terraform's own
+# abspath() produces. A value that disagrees with those names the same
+# file by a different string, which Terraform reads as drift.
+HARNESS_ROOT ?= $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+export HARNESS_ROOT
 
 # Compose is either the v2 `docker compose` subcommand or the v1
 # `docker-compose` binary, and this repo has to run on machines
@@ -134,6 +150,12 @@ containers:
 # further along.
 exec-bits:
 	@bash tools/pipeline.sh exec-bits
+
+# For filling in .env on the Compose-driven-directly path. Prints the
+# derived value rather than asking anyone to run pwd in the right
+# directory, which is the part that goes wrong.
+print-harness-root:
+	@echo $(HARNESS_ROOT)
 
 ci:
 	@bash tools/pipeline.sh all

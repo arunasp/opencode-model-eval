@@ -264,6 +264,26 @@ stage_verify() {
     rc=1
   fi
 
+  # Docs naming a make target that does not exist send a reader to a
+  # dead command. Only backticked mentions are matched, since prose uses
+  # the word "make" for other things. This is the checkable half of
+  # keeping docs in step; the rest still needs reading them.
+  local documented missing=""
+  documented="$(grep -rhoE '`make [a-z][a-z0-9-]*' -- ./*.md docs/*.md 2>/dev/null \
+    | sed 's/^`make //' | sort -u)"
+  local target
+  for target in $documented; do
+    if ! grep -qE "^${target}:" Makefile; then
+      missing="$missing $target"
+    fi
+  done
+  if [ -n "$missing" ]; then
+    log "docs name make targets that do not exist:$missing"
+    rc=1
+  else
+    log "every make target named in the docs exists ($(printf '%s\n' "$documented" | wc -w) referenced)"
+  fi
+
   # This repository is public, so a real host path or local username in a
   # tracked file is a permanent disclosure -- worse than the drift a
   # mismatched path causes, because rewriting published history is the
