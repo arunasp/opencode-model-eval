@@ -175,11 +175,22 @@ stage_lint() {
   done
   log "py_compile: done"
 
-  if command -v pycodestyle >/dev/null 2>&1; then
-    pycodestyle --max-line-length=120 scripts/*.py || rc=1
-    log "pycodestyle: done"
+  # pycodestyle comes from the project-local .venv that `make .deps`
+  # builds on the bind mount -- see the Makefile for why it cannot live
+  # in the worker image or in $HOME. Fall back to a PATH copy so a
+  # developer with it installed globally is unaffected, and skip with a
+  # named reason when neither exists rather than passing silently.
+  local pycodestyle=""
+  if [ -x .venv/bin/pycodestyle ]; then
+    pycodestyle=.venv/bin/pycodestyle
+  elif command -v pycodestyle >/dev/null 2>&1; then
+    pycodestyle=pycodestyle
+  fi
+  if [ -n "$pycodestyle" ]; then
+    "$pycodestyle" --max-line-length=120 scripts/*.py scripts/tools/*.py || rc=1
+    log "pycodestyle: done ($pycodestyle)"
   else
-    log "pycodestyle not installed, skipping that check"
+    log "pycodestyle absent and no .venv -- run 'make deps'; skipping that check"
   fi
 
   local j

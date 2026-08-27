@@ -25,7 +25,7 @@ import run_eval_client as r  # noqa: E402
 TIMEOUT_MSG = ("POST /session/x/message timed out after 300s waiting for a "
                "response from http://server:4096/session/x/message")
 CONTEXT_OVERFLOW_MSG = ("opencode returned an error response: "
-                         "ContextOverflowError: Session too large to compact")
+                        "ContextOverflowError: Session too large to compact")
 
 
 def _make_category():
@@ -56,12 +56,12 @@ class TimeoutRetryTests(unittest.TestCase):
             return {"info": {"finish": "stop"}, "parts": [{"type": "text", "text": "ok"}]}, None, []
 
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send), \
-             patch.object(r, "abort_session", self._fake_abort_session), \
-             patch.object(r, "scan_transcript", lambda p: {"category_counts": {}}), \
-             patch.object(r, "check_pass", lambda scan, criteria: (True, "pass_criteria satisfied")):
+                patch.object(r, "quota_aware_send_message", fake_send), \
+                patch.object(r, "abort_session", self._fake_abort_session), \
+                patch.object(r, "scan_transcript", lambda p: {"category_counts": {}}), \
+                patch.object(r, "check_pass", lambda scan, criteria: (True, "pass_criteria satisfied")):
             result = r.run_category(_make_category(), "http://server:4096", "local/ollama",
-                                     "test-model", "setup", self.tmpdir)
+                                    "test-model", "setup", self.tmpdir)
 
         self.assertTrue(result["tiers"][0]["passed"])
         self.assertEqual(result["ceiling"], 1)
@@ -74,16 +74,16 @@ class TimeoutRetryTests(unittest.TestCase):
             raise RuntimeError(TIMEOUT_MSG)
 
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send_always_timeout), \
-             patch.object(r, "abort_session", self._fake_abort_session):
+                patch.object(r, "quota_aware_send_message", fake_send_always_timeout), \
+                patch.object(r, "abort_session", self._fake_abort_session):
             result = r.run_category(_make_category(), "http://server:4096", "local/ollama",
-                                     "test-model", "setup", self.tmpdir)
+                                    "test-model", "setup", self.tmpdir)
 
         self.assertFalse(result["tiers"][0]["passed"])
         self.assertIn("HTTP/request error", result["tiers"][0]["reason"])
         create_calls = [c for c in self.call_log if c == "create_session"]
         self.assertEqual(len(create_calls), 1 + r.TIER_TIMEOUT_RETRY_LIMIT,
-                          "should try exactly 1 + TIER_TIMEOUT_RETRY_LIMIT times, no more")
+                         "should try exactly 1 + TIER_TIMEOUT_RETRY_LIMIT times, no more")
 
     def test_non_timeout_error_does_not_retry(self):
         def fake_send_context_overflow(base_url, session_id, provider, model_id, text, **kwargs):
@@ -91,10 +91,10 @@ class TimeoutRetryTests(unittest.TestCase):
             raise RuntimeError(CONTEXT_OVERFLOW_MSG)
 
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send_context_overflow), \
-             patch.object(r, "abort_session", self._fake_abort_session):
+                patch.object(r, "quota_aware_send_message", fake_send_context_overflow), \
+                patch.object(r, "abort_session", self._fake_abort_session):
             result = r.run_category(_make_category(), "http://server:4096", "local/ollama",
-                                     "test-model", "setup", self.tmpdir)
+                                    "test-model", "setup", self.tmpdir)
 
         self.assertFalse(result["tiers"][0]["passed"])
         create_calls = [c for c in self.call_log if c == "create_session"]

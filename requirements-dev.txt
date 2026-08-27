@@ -1,0 +1,23 @@
+# Development dependencies, installed into a project-local .venv by
+# `make .deps`. Not needed to run the harness -- the harness itself is
+# Python stdlib only, deliberately (see docs/CODEGEN.md).
+#
+# WHY A VENV AND NOT THE IMAGE. The cicd_runner worker is discarded
+# after every call, so where a dependency lands decides whether it
+# survives. System site-packages is unwritable at the worker's uid and
+# refused under PEP 668; `pip install --user` writes to a $HOME that
+# dies with the container. A .venv sits on the bind-mounted project
+# directory and persists, which makes this the layer the pipeline can
+# install for itself rather than something the shared worker image has
+# to carry for every project.
+#
+# Pinned rather than floating: a lint tool that changes its rule set
+# under you turns an unrelated commit red.
+pycodestyle==2.12.1
+
+# Autofixer for the mechanical subset of what pycodestyle reports
+# (continuation-line alignment, blank-line counts, missing trailing
+# newline). Deliberately never run across the whole rule set: E501 in
+# particular is fixed by restructuring code, which is a change to review
+# rather than apply. Invoke with an explicit --select.
+autopep8==2.3.1

@@ -75,7 +75,8 @@ STRUCTURAL = [
      "'not just X' -- state what it is, drop the contrast scaffold"),
     (r"\bit'?s not [^,.]{1,50}[,.] it'?s\b",
      "'It's not X, it's Y' -- keep Y, delete X"),
-    (r"^\s*(?:-\s*)?(?:Two|Three|Four|Five|Six|Seven)\s+\w+\s+(?:things|reasons|ways|pillars|options|steps|points|items)\b",
+    (r"^\s*(?:-\s*)?(?:Two|Three|Four|Five|Six|Seven)\s+\w+\s+"
+     r"(?:things|reasons|ways|pillars|options|steps|points|items)\b",
      "numbered lead-in -- let the list do the counting"),
     (r"\b(?:delve|tapestry|plethora|seamless(?:ly)?|game.?changer|supercharge)\b",
      "stock AI vocabulary with no one-word swap"),

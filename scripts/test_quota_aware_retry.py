@@ -186,7 +186,7 @@ class RunCategoryQuotaIntegrationTests(unittest.TestCase):
             "tiers": [{"tier": 1, "source": "validated", "prompt": "p1", "pass_criteria": {}}],
         }
         result = rec.run_category(category, "http://fake", "opencode", "deepseek-v4-flash-free",
-                                   "setup", self.tmpdir / "cat")
+                                  "setup", self.tmpdir / "cat")
 
         self.assertEqual(result["progress_dots"], "Q")
         self.assertEqual(result["ceiling"], 0)

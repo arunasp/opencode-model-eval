@@ -231,6 +231,7 @@ def _action_score(sentence):
     e = _embed(sentence)
     return float(np.dot(e, _ACTION_CENTROID) - np.dot(e, _NARRATION_CENTROID))
 
+
 # ── Detection patterns ─────────────────────────────────────────────
 # Two-part patterns (trigger ... connector) are scanned with
 # find_two_part_pattern() below, scoped to the SAME SENTENCE as the
@@ -576,8 +577,10 @@ def cmd_check(args):
         print(json.dumps(output, indent=2, default=str))
     else:
         print(f"CVV Grade: {result['grade']}")
-        print(f"  Tools: {result['tool_calls']} | Thinking: {result['thinking_blocks']} | Ratio: {result['tool_think_ratio']}")
-        print(f"  Claims: {result['verified_claims']} total, {result['artifact_backed']} backed, {result['unbacked_claims']} unbacked (ratio: {result['backed_ratio']})")
+        print(f"  Tools: {result['tool_calls']} | Thinking: {result['thinking_blocks']} "
+              f"| Ratio: {result['tool_think_ratio']}")
+        print(f"  Claims: {result['verified_claims']} total, {result['artifact_backed']} backed, "
+              f"{result['unbacked_claims']} unbacked (ratio: {result['backed_ratio']})")
         print(f"  Intents: {result['verify_intents']} verify-intents, {result['unverified_intents']} unverified")
         print(f"  Modes: {result['failure_modes'] or 'none'}")
         if result["violations"]:

@@ -44,7 +44,7 @@
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
         tf-jupyter-up tf-jupyter-down \
-        lint prose test verify e2e ci client containers exec-bits print-harness-root
+        lint prose test verify e2e ci client containers exec-bits deps print-harness-root
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -72,6 +72,7 @@ help:
 	@echo "make tf-jupyter-up                 same, Terraform side"
 	@echo "make tf-jupyter-down               same, Terraform side"
 	@echo "make lint                          shellcheck, py_compile, config parse"
+	@echo "make deps                          install dev dependencies into .venv"
 	@echo "make prose                         filler-word ratchet over the docs"
 	@echo "make test                          run every scripts/test_* suite"
 	@echo "make verify                        assert the Compose resolver is the only call path"
@@ -127,7 +128,34 @@ COMPOSE := bash scripts/compose.sh
 # Staged checks. Each delegates to tools/pipeline.sh, which reports every
 # failing stage rather than stopping at the first, tees to logs/, and
 # treats exit 2 as SKIPPED when a tool is missing from this environment.
-lint:
+# Dev dependencies live in a project-local .venv on the bind mount, not
+# in the worker image and not in $HOME. A cicd_runner worker is thrown
+# away after every call: system site-packages is unwritable at its uid
+# (and refused under PEP 668), and `pip install --user` writes to a
+# $HOME that dies with the container. The bind mount is the only thing
+# that survives, so that is where they go.
+#
+# `.deps` is a SENTINEL FILE, deliberately absent from .PHONY: listing
+# it there would force a reinstall on every invocation, which is the
+# whole cost this avoids. It rebuilds only when requirements-dev.txt is
+# newer.
+#
+# PIP_OFFLINE points pip at a wheelhouse when one exists and falls back
+# to the network when it does not, so a plain checkout still works.
+VENV ?= .venv
+WHEELHOUSE ?= wheelhouse
+PIP_OFFLINE = $(if $(wildcard $(WHEELHOUSE)/*.whl),--no-index --find-links $(WHEELHOUSE),)
+
+.deps: requirements-dev.txt
+	@test -x "$(VENV)/bin/python3" || python3 -m venv $(VENV)
+	@$(VENV)/bin/python3 -m pip install -q --upgrade pip
+	@$(VENV)/bin/python3 -m pip install -q $(PIP_OFFLINE) -r requirements-dev.txt
+	@touch .deps
+	@echo "dev dependencies installed into $(VENV)"
+
+deps: .deps
+
+lint: .deps
 	@bash tools/pipeline.sh lint
 
 prose:

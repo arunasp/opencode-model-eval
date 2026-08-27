@@ -230,7 +230,7 @@ def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
     url = f"{base_url.rstrip('/')}{path}"
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST",
-                                  headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
@@ -393,7 +393,7 @@ def abort_session(base_url: str, session_id: str) -> bool:
 
 
 def send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
-                  timeout: int = 300) -> dict:
+                 timeout: int = 300) -> dict:
     body = {
         "model": {"providerID": provider, "modelID": model_id},
         "parts": [{"type": "text", "text": text}],
@@ -554,9 +554,9 @@ def _unproductive_loop(previous: dict, current: dict,
 
 
 def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
-                              quota_wait_threshold_s: float = QUOTA_WAIT_THRESHOLD_S,
-                              poll_interval_s: float = STATUS_POLL_INTERVAL_S,
-                              timeout: int = 300) -> tuple[dict | None, dict | None, list[dict]]:
+                             quota_wait_threshold_s: float = QUOTA_WAIT_THRESHOLD_S,
+                             poll_interval_s: float = STATUS_POLL_INTERVAL_S,
+                             timeout: int = 300) -> tuple[dict | None, dict | None, list[dict]]:
     """Wraps send_message() with concurrent, non-blocking status
     awareness -- NOT a retry mechanism itself, since opencode already
     has one (session/retry.ts, confirmed unbounded by attempt count or
@@ -665,7 +665,7 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
                     pass  # best-effort -- we're bailing on this tier regardless
                 done_event.wait(timeout=poll_interval_s)
                 events.append({"timestamp": time.time(), "type": "server_log_error",
-                                "line": log_error_line, "classification": error_classification})
+                               "line": log_error_line, "classification": error_classification})
                 return None, {
                     "kind": "server_log_error",
                     "message": f"{error_classification}: {log_error_line}",
@@ -1124,7 +1124,7 @@ def chain_to_transcript(message_chain: dict) -> str:
 
 
 def events_to_transcript(setup_message: str, setup_text: str, setup_tools: list[dict],
-                          probe_message: str, probe_text: str, probe_tools: list[dict]) -> str:
+                         probe_message: str, probe_text: str, probe_tools: list[dict]) -> str:
     lines = []
 
     def render_turn(user_msg: str, text: str, tools: list[dict]):
@@ -1344,7 +1344,8 @@ def _classify_log_error(log_line: str) -> str | None:
     lowered = log_line.lower()
     for marker in _CONTEXT_OVERFLOW_MARKERS:
         if marker in lowered:
-            return f"context overflow (matches opencode's own permanently-non-retryable ContextOverflowError class -- \"{marker}\")"
+            return (f"context overflow (matches opencode's own permanently-non-retryable "
+                    f'ContextOverflowError class -- "{marker}")')
 
     for pattern in _RETRYABLE_TEXT_PATTERNS:
         if pattern in lowered:
@@ -1369,7 +1370,9 @@ def _classify_log_error(log_line: str) -> str | None:
         # classes -- opencode has already given up retrying it
         # internally, so this is a confirmed, precise bailout case,
         # not a generic unclassified one.
-        return "provider-side timeout (confirmed via opencode's own retry.ts: a bare TimeoutError matches none of its retryable classes, so opencode does not retry this internally either)"
+        return ("provider-side timeout (confirmed via opencode's own retry.ts: a bare "
+                "TimeoutError matches none of its retryable classes, so opencode does "
+                "not retry this internally either)")
 
     # An ERROR line that doesn't match a known code/marker at all --
     # fall back to the original, more conservative default: fail fast
@@ -1401,7 +1404,7 @@ def filter_log_by_identifiers(log_text: str, identifiers: set) -> str:
 
 
 def run_category(category: dict, base_url: str, provider: str, model_id: str,
-                  setup_message: str, category_dir: Path) -> dict:
+                 setup_message: str, category_dir: Path) -> dict:
     cat_id = category["id"]
     cat_start_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     print(f"[eval-client] category: {cat_id}: {category['description']} (started {cat_start_utc})",
@@ -1409,7 +1412,10 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
     category_dir.mkdir(parents=True, exist_ok=True)
     ceiling = 0
     tier_results = []
-    summary_dots = []  # one char per tier: . pass / F fail / R review / E error / Q quota-exhausted -- printed as a compact row at the end of this category, and again in main()'s final grid
+    # One char per tier: . pass / F fail / R review / E error / Q quota-exhausted.
+    # Printed as a compact row at the end of this category, and again in
+    # main()'s final grid.
+    summary_dots = []
 
     for tier_def in category["tiers"]:
         tier_num = tier_def["tier"]
@@ -1692,7 +1698,7 @@ def _ollama_model_entry(model_id: str, models: list[dict]) -> dict | None:
 
 
 def _poll_ollama_ps_during(ollama_base_url: str, model_id: str, done_event: threading.Event,
-                            poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
+                           poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
     """Runs in a background thread alongside a blocking call, printing
     periodic /api/ps status purely for visibility -- NOT a gate.
     Confirmed against Ollama's real, documented API schema that
@@ -1836,8 +1842,8 @@ def warm_up_local_model(base_url: str, provider: str, model_id: str) -> None:
 
 
 def unload_local_model(ollama_base_url: str, model_id: str,
-                        timeout_s: float = OLLAMA_UNLOAD_TIMEOUT_S,
-                        poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
+                       timeout_s: float = OLLAMA_UNLOAD_TIMEOUT_S,
+                       poll_interval_s: float = OLLAMA_PS_POLL_INTERVAL_S) -> None:
     """Explicitly unloads the model from Ollama once the run finishes,
     via the same native API scripts/ollama-model-switch.sh already
     uses (POST /api/generate {"model":..., "keep_alive":0}) instead of
@@ -1861,7 +1867,7 @@ def unload_local_model(ollama_base_url: str, model_id: str,
     try:
         body = json.dumps({"model": model_id, "keep_alive": 0}).encode("utf-8")
         req = urllib.request.Request(f"{ollama_base_url}/api/generate", data=body,
-                                      headers={"Content-Type": "application/json"}, method="POST")
+                                     headers={"Content-Type": "application/json"}, method="POST")
         urllib.request.urlopen(req, timeout=10).read()
     except Exception as e:
         _log(f"unload request failed ({e}) -- Ollama's own keep-alive will still expire it eventually")

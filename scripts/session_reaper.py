@@ -84,10 +84,13 @@ import urllib.error
 import urllib.request
 
 ENABLED = os.environ.get("OPENCODE_REAPER_ENABLED", "true").lower() not in ("false", "0", "")
-BASE_URL = os.environ.get("OPENCODE_REAPER_BASE_URL", f"http://localhost:{os.environ.get('OPENCODE_SERVE_PORT', '4096')}")
+_PORT = os.environ.get("OPENCODE_SERVE_PORT", "4096")
+BASE_URL = os.environ.get("OPENCODE_REAPER_BASE_URL", f"http://localhost:{_PORT}")
 LOCAL_PROVIDER_KEY = os.environ.get("OPENCODE_OLLAMA_PROVIDER_KEY", "local/ollama")
-LOCAL_TTL_S = float(os.environ.get("OPENCODE_LOCAL_SESSION_TTL_S", "600"))  # 10min -- aggressive, this is the actual resource cost
-TTL_S = float(os.environ.get("OPENCODE_SESSION_TTL_S", "3600"))  # 60min -- fallback for cloud/no-model-yet, stays above QUOTA_WAIT_THRESHOLD_S's 50min default so it never preempts a legitimate quota-retry wait
+# 10min -- aggressive, because sustained Ollama residency is the resource cost.
+LOCAL_TTL_S = float(os.environ.get("OPENCODE_LOCAL_SESSION_TTL_S", "600"))
+# 60min -- fallback for cloud and not-yet-chosen models. Stays above
+# QUOTA_WAIT_THRESHOLD_S's 50min default so it never preempts a legitimate quota-retry wait
 POLL_INTERVAL_S = float(os.environ.get("OPENCODE_REAPER_POLL_INTERVAL_S", "120"))
 LIST_LIMIT = int(os.environ.get("OPENCODE_REAPER_LIST_LIMIT", "500"))
 

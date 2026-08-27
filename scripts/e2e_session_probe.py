@@ -204,7 +204,8 @@ def main():
     parser.add_argument("--check-only", action="store_true",
                         help="resolve and report a reachable server, then exit without opening a session")
     parser.add_argument("--require-server", action="store_true",
-                        help="treat an unreachable server as a failure rather than a skip, for a caller that just started one")
+                        help=("treat an unreachable server as a failure rather than a skip, "
+                              "for a caller that just started one"))
     args = parser.parse_args()
 
     candidates = candidate_urls(args.base_url)

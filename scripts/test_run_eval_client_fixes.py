@@ -67,10 +67,10 @@ class WarmUpFailureMessageWordingTests(unittest.TestCase):
 
         buf = io.StringIO()
         with patch.object(r, "create_session", fake_create_session), \
-             patch.object(r, "abort_session", fake_abort_session), \
-             patch.object(r, "ollama_ps", fake_ollama_ps), \
-             patch.object(r, "quota_aware_send_message", fake_qasm), \
-             redirect_stderr(buf):
+                patch.object(r, "abort_session", fake_abort_session), \
+                patch.object(r, "ollama_ps", fake_ollama_ps), \
+                patch.object(r, "quota_aware_send_message", fake_qasm), \
+                redirect_stderr(buf):
             r.warm_up_local_model("http://server:4096", "local/ollama", "test-model")
 
         lines = [line for line in buf.getvalue().splitlines()
@@ -201,8 +201,8 @@ class WarmUpLogDetectionTests(unittest.TestCase):
         def fake_check_log(session_id):
             import json
             return json.dumps({"error": {"code": 400,
-                                          "message": "exceeds the available context size",
-                                          "type": "exceed_context_size_error"}})
+                                         "message": "exceeds the available context size",
+                                         "type": "exceed_context_size_error"}})
 
         def fake_get_session_status(base_url, session_id):
             return {"type": "busy"}
@@ -218,11 +218,11 @@ class WarmUpLogDetectionTests(unittest.TestCase):
 
         start = time.time()
         with patch.object(r, "create_session", fake_create_session), \
-             patch.object(r, "_check_session_log_error", fake_check_log), \
-             patch.object(r, "get_session_status", fake_get_session_status), \
-             patch.object(r, "send_message", fake_send_message), \
-             patch.object(r, "abort_session", fake_abort_session), \
-             patch.object(r, "ollama_ps", fake_ollama_ps):
+                patch.object(r, "_check_session_log_error", fake_check_log), \
+                patch.object(r, "get_session_status", fake_get_session_status), \
+                patch.object(r, "send_message", fake_send_message), \
+                patch.object(r, "abort_session", fake_abort_session), \
+                patch.object(r, "ollama_ps", fake_ollama_ps):
             r.warm_up_local_model("http://server:4096", "local/ollama", "test-model")
         elapsed = time.time() - start
 
@@ -246,10 +246,10 @@ class WarmUpLogDetectionTests(unittest.TestCase):
             return {"type": "idle"}
 
         with patch.object(r, "send_message", fake_send_message), \
-             patch.object(r, "get_session_status", fake_get_session_status), \
-             patch.object(r, "_check_session_log_error", lambda session_id: None):
+                patch.object(r, "get_session_status", fake_get_session_status), \
+                patch.object(r, "_check_session_log_error", lambda session_id: None):
             r.quota_aware_send_message("http://server:4096", "ses_1", "local/ollama",
-                                        "test-model", "hi", timeout=600)
+                                       "test-model", "hi", timeout=600)
 
         self.assertEqual(captured.get("timeout"), 600)
 

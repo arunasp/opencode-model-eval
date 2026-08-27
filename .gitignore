@@ -45,3 +45,10 @@ __pycache__/
 # Machine-specific compose environment. .env.example is committed as the
 # template; .env holds an absolute path for one machine and must not be.
 .env
+
+# Dev dependencies live in a project-local venv on the bind mount, not in
+# the worker image -- see requirements-dev.txt. `.deps` is the sentinel
+# that gates reinstalling them.
+.venv/
+.deps
+wheelhouse/

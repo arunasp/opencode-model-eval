@@ -108,7 +108,7 @@ class ClassifyLogErrorTests(unittest.TestCase):
         # opencode's own source: ContextOverflowError is explicitly,
         # permanently excluded from retry.
         line = self._make_line(400, "request (5602 tokens) exceeds the available context size (4096 tokens)",
-                                "exceed_context_size_error")
+                               "exceed_context_size_error")
         result = r._classify_log_error(line)
         self.assertIsNotNone(result)
         self.assertIn("context overflow", result)
@@ -185,7 +185,9 @@ class ClassifyLogErrorTests(unittest.TestCase):
         self.assertIsNone(r._classify_log_error(line))
 
     def test_json_unavailable_code_does_not_bail_out(self):
-        line = f'level=ERROR error.error="{json.dumps({"code": "service_unavailable", "message": "temporarily unavailable"})}"'
+        payload = json.dumps({"code": "service_unavailable",
+                              "message": "temporarily unavailable"})
+        line = f'level=ERROR error.error="{payload}"'
         self.assertIsNone(r._classify_log_error(line))
 
     def test_json_too_many_requests_error_type_does_not_bail_out(self):
@@ -218,9 +220,9 @@ class ClassifyLogErrorTests(unittest.TestCase):
             abort_calls.append(session_id)
 
         with patch.object(r, "_check_session_log_error", fake_check_log), \
-             patch.object(r, "get_session_status", fake_get_session_status), \
-             patch.object(r, "send_message", fake_send_message), \
-             patch.object(r, "abort_session", fake_abort_session):
+                patch.object(r, "get_session_status", fake_get_session_status), \
+                patch.object(r, "send_message", fake_send_message), \
+                patch.object(r, "abort_session", fake_abort_session):
             result, quota_info, events = r.quota_aware_send_message(
                 "http://server:4096", "ses_1", "local/ollama", "test-model", "hi",
                 poll_interval_s=0.05)
@@ -254,10 +256,10 @@ class RunCategoryServerLogErrorTests(unittest.TestCase):
         category = {"id": "c1", "description": "test",
                     "tiers": [{"tier": 1, "source": "test", "prompt": "probe", "pass_criteria": {}}]}
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send), \
-             patch.object(r, "abort_session", self._fake_abort_session):
+                patch.object(r, "quota_aware_send_message", fake_send), \
+                patch.object(r, "abort_session", self._fake_abort_session):
             result = r.run_category(category, "http://server:4096", "local/ollama",
-                                     "test-model", "setup", self.tmpdir)
+                                    "test-model", "setup", self.tmpdir)
 
         self.assertFalse(result["tiers"][0]["passed"])
         self.assertIn("opencode server log error", result["tiers"][0]["reason"])
@@ -276,10 +278,10 @@ class RunCategoryServerLogErrorTests(unittest.TestCase):
         category = {"id": "c1", "description": "test",
                     "tiers": [{"tier": 1, "source": "test", "prompt": "probe", "pass_criteria": {}}]}
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send), \
-             patch.object(r, "abort_session", self._fake_abort_session):
+                patch.object(r, "quota_aware_send_message", fake_send), \
+                patch.object(r, "abort_session", self._fake_abort_session):
             r.run_category(category, "http://server:4096", "local/ollama",
-                            "test-model", "setup", self.tmpdir)
+                           "test-model", "setup", self.tmpdir)
 
         create_calls = [c for c in self.call_log if c == "create_session"]
         self.assertEqual(len(create_calls), 1, "a server-log error must not trigger a retry")
@@ -295,10 +297,10 @@ class RunCategoryServerLogErrorTests(unittest.TestCase):
         category = {"id": "c1", "description": "test",
                     "tiers": [{"tier": 1, "source": "test", "prompt": "probe", "pass_criteria": {}}]}
         with patch.object(r, "create_session", self._fake_create_session), \
-             patch.object(r, "quota_aware_send_message", fake_send_quota), \
-             patch.object(r, "abort_session", self._fake_abort_session):
+                patch.object(r, "quota_aware_send_message", fake_send_quota), \
+                patch.object(r, "abort_session", self._fake_abort_session):
             result = r.run_category(category, "http://server:4096", "local/ollama",
-                                     "test-model", "setup", self.tmpdir)
+                                    "test-model", "setup", self.tmpdir)
 
         self.assertTrue(result["tiers"][0]["reason"].startswith("quota/rate-limit exhausted"))
         self.assertEqual(result["progress_dots"], "Q")

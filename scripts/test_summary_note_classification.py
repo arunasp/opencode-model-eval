@@ -47,7 +47,7 @@ class SummaryNoteClassificationTests(unittest.TestCase):
             "quota_wait_seconds": 3600,
         }]}
         self.assertEqual(_summary_note_for_category(cat_report),
-                          " [stopped: QUOTA -- next opencode attempt in ~60min, gave up waiting]")
+                         " [stopped: QUOTA -- next opencode attempt in ~60min, gave up waiting]")
 
     def test_server_log_error(self):
         # The exact bug this test guards against: this reason prefix
