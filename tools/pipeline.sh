@@ -473,19 +473,21 @@ stage_client() {
   return $?
 }
 
-# Any HTTP answer means up; only a connection-level failure means not --
-# the same test entrypoint.sh's own wait loop uses.
+# Any HTTP answer means up; only a connection-level failure means not.
+# Delegates to the probe's own resolver rather than reimplementing it:
+# two implementations of "is the server answering" is two things to keep
+# in step, and the subtlety they have to agree on -- that a timeout
+# means listening-but-slow, not absent -- is exactly the kind that
+# drifts apart.
+#
+# The short readiness allowance is deliberate rather than zero. This
+# decides whether a server was already running, and a slow answer would
+# otherwise read as absent -- so the stage would set started_here on a
+# server it did not start, and stop it afterwards. An absent server
+# still returns immediately, since a refused connection needs no wait.
 server_answering() {
-  python3 -c "
-import sys, urllib.error, urllib.request
-try:
-    urllib.request.urlopen('$1/session', timeout=3)
-except urllib.error.HTTPError:
-    sys.exit(0)
-except Exception:
-    sys.exit(1)
-sys.exit(0)
-" 2>/dev/null
+  OPENCODE_SERVER_URL="$1" python3 scripts/e2e_session_probe.py --check-only \
+    --ready-timeout 15 >/dev/null 2>&1
 }
 
 # Full container lifecycle: build, start, probe, stop. This is the stage
@@ -527,22 +529,15 @@ stage_containers() {
     bash scripts/compose.sh build server || return 1
     log "starting the server"
     bash scripts/compose.sh up -d server || return 1
-
-    local waited=0
-    until server_answering "$base_url"; do
-      waited=$((waited + 3))
-      if [ "$waited" -ge 120 ]; then
-        log "server did not answer at $base_url within ${waited}s"
-        bash scripts/compose.sh logs --tail 40 server
-        bash scripts/compose.sh down
-        return 1
-      fi
-      sleep 3
-    done
-    log "server answering after ${waited}s"
   fi
 
-  OPENCODE_SERVER_URL="$base_url" python3 scripts/e2e_session_probe.py
+  # No readiness loop here. The probe waits for a server that is
+  # listening but still bootstrapping, on one long request rather than a
+  # storm of abandoned short ones -- a request the client gives up on is
+  # still being served, so polling a cold server competes with the very
+  # startup it is waiting for. --require-server turns absence into a
+  # failure, since this stage has just started one.
+  OPENCODE_SERVER_URL="$base_url" python3 scripts/e2e_session_probe.py --require-server
   rc=$?
   case "$rc" in
     0) log "session probe: PASS" ;;

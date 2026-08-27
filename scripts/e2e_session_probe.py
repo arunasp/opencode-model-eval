@@ -28,6 +28,7 @@ Exit codes follow tools/pipeline.sh's convention:
 import argparse
 import json
 import os
+import socket
 import sys
 import time
 import urllib.error
@@ -50,6 +51,9 @@ RESULTS_DIR = Path(os.environ.get("E2E_RESULTS_DIR", REPO_ROOT / "results" / "e2
 DISCOVERED_ENV = REPO_ROOT / "results" / "discovered" / "discovered-model.env"
 PROMPT = "hi"
 SKIP = 2
+# Short enough that a genuinely absent server is reported quickly, long
+# enough that a healthy one answers within it.
+SWEEP_TIMEOUT_S = 5
 
 
 def log(msg):
@@ -84,18 +88,65 @@ def candidate_urls(explicit):
     return urls
 
 
-def reachable(base_url, timeout=3):
-    """Any HTTP answer means the server is up. Only a connection-level
-    failure means it is not -- the same test entrypoint.sh's own wait
-    loop uses.
+def probe(base_url, timeout):
+    """One attempt. Returns 'up', 'absent' or 'slow'.
+
+    'slow' means the connection was accepted and the answer did not
+    arrive in time -- the request is still being served after this
+    returns, which is the whole reason the caller must not simply fire
+    another one.
     """
     try:
         urllib.request.urlopen(f"{base_url}/session", timeout=timeout)
-        return True
+        return "up"
     except urllib.error.HTTPError:
-        return True
+        return "up"
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+            return "absent"
+        if isinstance(reason, TimeoutError):
+            return "slow"
+        return "absent"
+    except TimeoutError:
+        return "slow"
     except Exception:
-        return False
+        return "absent"
+
+
+def wait_for_server(candidates, ready_timeout):
+    """Resolve which server to talk to, waiting for a cold one.
+
+    Two phases, because 'nothing is listening' and 'listening but still
+    bootstrapping' need opposite treatment and a single-shot check
+    cannot tell them apart.
+
+    Phase one is a quick sweep: a refused connection or an unresolvable
+    name is a real answer, so a genuinely absent server is reported in
+    seconds rather than after the full deadline.
+
+    Phase two starts the moment any candidate is merely slow. From then
+    on this waits on ONE long request rather than issuing a new short
+    one every few seconds. A request abandoned at the client is not
+    abandoned at the server -- it goes on creating an instance, and
+    polling it repeatedly stacks more of that work onto a server that is
+    already busy with the last attempt. Waiting is what makes the
+    readiness check stop competing with the readiness it is waiting for.
+    """
+    for candidate in candidates:
+        state = probe(candidate, timeout=SWEEP_TIMEOUT_S)
+        if state == "up":
+            return candidate.rstrip("/")
+        if state == "slow":
+            log(f"{candidate} is listening but still coming up -- waiting up to {ready_timeout}s")
+            deadline = time.monotonic() + ready_timeout
+            while time.monotonic() < deadline:
+                remaining = max(1, int(deadline - time.monotonic()))
+                if probe(candidate, timeout=remaining) == "up":
+                    return candidate.rstrip("/")
+            log(f"{candidate} never became ready within {ready_timeout}s")
+            return ""
+    return ""
 
 
 def resolve_model():
@@ -147,17 +198,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("OPENCODE_SERVER_URL", ""))
     parser.add_argument("--timeout", type=int, default=120)
+    parser.add_argument("--ready-timeout", type=int,
+                        default=int(os.environ.get("E2E_READY_TIMEOUT_S", "120")),
+                        help="how long to wait for a server that is listening but still starting")
+    parser.add_argument("--check-only", action="store_true",
+                        help="resolve and report a reachable server, then exit without opening a session")
+    parser.add_argument("--require-server", action="store_true",
+                        help="treat an unreachable server as a failure rather than a skip, for a caller that just started one")
     args = parser.parse_args()
 
-    base_url = ""
-    for candidate in candidate_urls(args.base_url):
-        if reachable(candidate):
-            base_url = candidate.rstrip("/")
-            break
+    candidates = candidate_urls(args.base_url)
+    base_url = wait_for_server(candidates, args.ready_timeout)
     if not base_url:
-        log("no opencode serve instance answered on any candidate URL -- skipping")
-        log(f"tried: {', '.join(candidate_urls(args.base_url))}")
-        return SKIP
+        log("no opencode serve instance answered on any candidate URL")
+        log(f"tried: {', '.join(candidates)}")
+        # A caller that has just started the stack knows one should be
+        # there, so absence is a real failure for it and a skip for
+        # everyone else.
+        return 1 if args.require_server else SKIP
+
+    if args.check_only:
+        log(f"server reachable: {base_url}")
+        return 0
 
     provider, model_id, source = resolve_model()
     if not provider or not model_id:
