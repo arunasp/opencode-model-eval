@@ -180,13 +180,28 @@ class OpenAICompatibleMockHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(port: int, mode: str, reply_text: str) -> tuple[http.server.HTTPServer, type]:
+def make_server(port: int, mode: str, reply_text: str,
+                host: str = "127.0.0.1") -> tuple[http.server.HTTPServer, type]:
+    """Build a configured mock server bound to `host`.
+
+    The default is LOOPBACK, which is right for a caller in the same
+    network namespace -- test_run_eval_client_e2e.py runs opencode as a
+    host subprocess, so 127.0.0.1 reaches this.
+
+    A caller in a CONTAINER cannot. `host.docker.internal` resolves to
+    the host's bridge address, never to the host's loopback, so a mock
+    bound to 127.0.0.1 refuses the connection and the provider call
+    fails with no reply and no finish reason. Such a caller must pass
+    host="0.0.0.0" (CLI: --host). Kept opt-in rather than defaulted:
+    binding every interface by default would expose a request-logging
+    proxy on any network the machine is attached to.
+    """
     handler_cls = type(
         "ConfiguredHandler",
         (OpenAICompatibleMockHandler,),
         {"mode": mode, "reply_text": reply_text, "requests_log": []},
     )
-    return http.server.HTTPServer(("127.0.0.1", port), handler_cls), handler_cls
+    return http.server.HTTPServer((host, port), handler_cls), handler_cls
 
 
 def main(argv=None) -> int:
@@ -202,13 +217,18 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=0,
                         help="0 (the default) lets the kernel choose; the "
                              "chosen port is printed on the first stdout line")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="bind address. Use 0.0.0.0 when the caller is in "
+                             "a container: host.docker.internal resolves to "
+                             "the bridge address, not to loopback, so a "
+                             "loopback-bound mock refuses it")
     parser.add_argument("--mode", choices=("sse", "flat"), default="sse",
                         help="sse is conformant; flat is the fault injector "
                              "described in this module's docstring")
     parser.add_argument("--reply", default="mock reply")
     args = parser.parse_args(argv)
 
-    server, _handler = make_server(args.port, args.mode, args.reply)
+    server, _handler = make_server(args.port, args.mode, args.reply, args.host)
     print(server.server_address[1], flush=True)
     try:
         server.serve_forever()

@@ -130,7 +130,15 @@ jobs:
 
       - name: start the mock provider on the host
         run: |
-          python3 scripts/tools/mock_openai_backend.py --port 0 > mock.port 2>mock.log &
+          # --host 0.0.0.0 because the CALLER IS A CONTAINER. It reaches
+          # the host through host.docker.internal, which resolves to the
+          # bridge address and never to loopback, so a mock on 127.0.0.1
+          # refuses the connection: the session opens, the provider call
+          # fails, and the reply comes back empty with no finish reason.
+          # The e2e job needs no such flag -- opencode runs there as a
+          # host subprocess in the same network namespace.
+          python3 scripts/tools/mock_openai_backend.py --port 0 --host 0.0.0.0 \
+            > mock.port 2>mock.log &
           echo $! > mock.pid
           for _ in $(seq 1 50); do
             [ -s mock.port ] && break
@@ -141,7 +149,7 @@ jobs:
             echo "::error::mock did not report a port"; cat mock.log; exit 1
           fi
           echo "MOCK_PORT=$port" >> "$GITHUB_ENV"
-          echo "mock listening on $port"
+          echo "mock listening on 0.0.0.0:$port"
 
       # The config goes in RUNNER_TEMP rather than the checkout: compose
       # mounts OPENCODE_GLOBAL_CONFIG by absolute host path, so it need
