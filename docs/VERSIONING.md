@@ -1,25 +1,50 @@
 # Versioning
 
-Semantic versioning (`MAJOR.MINOR.PATCH`) applied to the repo as a whole
-via git tags. No package is published, so tags are the only version
-artifact.
+`MAJOR.MINOR.BUILD`, applied to the repo as a whole via git tags. No
+package is published, so tags are the only version artifact.
 
-| Bump | Applies to |
+**This is not semantic versioning, and saying so matters.** Semver
+reserves the third position for PATCH, which carries an implied promise:
+same MAJOR.MINOR means compatible, and a higher third digit means fixes
+only. Here the third digit is a BUILD COUNTER and carries no such
+promise — it says how many merges have landed, not what kind. A reader
+who assumes semver will read a build bump as a bugfix release.
+
+| Position | Meaning |
 |---|---|
 | **MAJOR** | Breaking change to the environment contract: task-suite prompt format, results JSON schema, or required env vars — as of `v1.0.0`, `OPENCODE_MODEL_PROVIDER`, `OPENCODE_MODEL_ID` and the server URL |
 | **MINOR** | Additive capability: a new model reachable through the global opencode config, a new results field, a new flag defaulting to prior behaviour |
-| **PATCH** | Bug fixes, doc corrections, dependency or provider version bumps with no contract change |
+| **BUILD** | Every merge to `main`, tagged or not. Resets to 0 when MAJOR or MINOR changes |
 
 The Dockerfile's `MODEL_PROVIDER` / `MODEL_ID` build args were once a
 MAJOR-level contract. They no longer exist — model selection is a
 runtime request parameter as of `v0.2.0`.
 
+## The build digit
+
+It counts merges, not releases, so it advances whether or not anything
+is tagged. Two consequences, both correct rather than defects to fix:
+
+- **Tag numbers have gaps.** `v1.1.0` may be followed by `v1.1.4` if
+  three untagged merges landed in between. A contiguous run of tag
+  numbers would mean the counter was being maintained by hand.
+- **Every commit has a version, whether tagged or not.** The build digit
+  is derivable from the history rather than remembered:
+
+  ```bash
+  # merges on main since the last MAJOR/MINOR bump
+  git rev-list --count <last-bump-tag>..HEAD
+  ```
+
+Because it resets on a MAJOR or MINOR change, the bump commit itself is
+build 0. `v1.1.0` is build 0 of the 1.1 line; the next merge to `main`
+is 1.1.1 even if no tag is cut for it.
+
 ## Tagging
 
-Tag `main` at the commit reaching a version boundary. Patch sets named
-per `docs/BRANCHING.md` are named for the version they deliver **to**:
-`opencode-model-eval-patch-0.2.0.tar.gz` lands at `v0.2.0`, so the tag
-belongs on the commit that patch set produces.
+Tag `main` at the commit reaching a version boundary. Not every build
+needs a tag — tag when a state is worth referencing or rolling back to
+by name.
 
 ## Tags
 

@@ -2,7 +2,8 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 Tagged versions are created after merging to `main`, per
-`docs/BRANCHING.md`. The MAJOR/MINOR/PATCH rules applied here are in
+`docs/BRANCHING.md`. Versions are `MAJOR.MINOR.BUILD` and are **not**
+semantic versioning — the third digit counts merges, not fixes. See
 `docs/VERSIONING.md`.
 
 ## [1.1.0] - 2026-08-27
