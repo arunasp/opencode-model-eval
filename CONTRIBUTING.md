@@ -66,9 +66,15 @@ which otherwise fail inside a job.
 
 Two environment differences to know when a result differs between CI and
 your machine: GitHub runners have `jq`, so `test_ollama_model_switch.sh`
-runs there and skips in the cicd_runner worker; and `client` is not run
-in CI, since `containers-mock` covers the same probe with a server it
-starts itself.
+runs there and skips in the cicd_runner worker — confirmed on the first
+hosted run, where 13 suites executed and none skipped; and `client` is
+not run in CI, since `containers-mock` covers the same probe with a
+server it starts itself.
+
+Action versions are pinned to majors that declare the Node 24 runtime
+(`checkout@v6`, `setup-python@v6`, `setup-node@v6`). Node 20 is removed
+from GitHub runners in September 2026, and an action declaring it emits
+a deprecation warning until then.
 
 ## Scope
 

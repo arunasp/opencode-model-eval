@@ -26,8 +26,8 @@ jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
           cache: pip
@@ -51,13 +51,14 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      # No pip cache here: `make test` installs nothing, so the cache
+      # step reports "Cache folder path is retrieved for pip but doesn't
+      # exist on disk". Only `make lint` pulls in .deps.
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
       - name: test
@@ -73,8 +74,8 @@ jobs:
   e2e-mock:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: start the mock provider
@@ -122,8 +123,8 @@ jobs:
   containers-mock:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
