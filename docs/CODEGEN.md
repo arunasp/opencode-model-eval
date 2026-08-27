@@ -89,4 +89,20 @@ Files carrying pre-existing hits are listed in the script's `BASELINE`
 and may only improve; any other file must be clean. Suppress with
 `<!-- prose-disable-file -->`, a `<!-- prose-disable -->` /
 `<!-- prose-enable -->` section, `<!-- prose-disable-next-line -->`, or a
-trailing `# noqa: prose`.
+trailing `# noqa: prose`. A suppression covering a line that would pass
+without it fails the stage: an exemption that outlived its cause
+silently covers whatever is written on that line next.
+
+## Workflows
+
+`.github/workflows/*.yml` is checked by `make lint`
+(`scripts/tools/workflow_check.py`). Beyond parsing, it verifies that
+heredocs inside `run:` blocks terminate at column 0 and that Python
+heredoc bodies compile.
+
+Both matter because of how YAML block scalars work: the parser strips a
+common indent, so whether `<<'PY'` behaves depends on how the block was
+written, and an editor that re-indents it produces an unterminated
+heredoc that swallows the rest of the script. That has broken this repo
+twice. Prefer a script over Python embedded in a `run:` block for
+anything longer than a few lines.

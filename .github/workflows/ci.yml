@@ -1,0 +1,217 @@
+name: ci
+
+# Hosted CI is the event-driven half of this project's pipeline; the
+# cicd_runner is the local half. Both invoke the SAME make targets. The
+# moment either grows its own command sequence the two definitions
+# drift, and each becomes an excuse for the other's failure.
+#
+# No real model is called from here. Every job that needs a provider
+# points at scripts/tools/mock_openai_backend.py. Nothing reaches
+# Ollama, a cloud provider, or a credential, so CI works on a fork with
+# no secrets configured.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Everything that needs neither Node nor a provider. Split out so a
+  # wording or shell error reports in seconds rather than behind a
+  # multi-minute npm install.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: lint
+        run: make lint
+      - name: prose
+        run: make prose
+      - name: verify
+        run: make verify
+
+  # `make test` includes test_run_eval_client_e2e.py, which installs the
+  # pinned opencode-ai package, writes a config whose provider baseURL is
+  # the mock's port, and drives a serve process through it. opencode runs
+  # as a bare subprocess there; the containerised path is
+  # containers-mock below.
+  #
+  # jq is present on GitHub runners and absent from the cicd_runner
+  # worker, so test_ollama_model_switch.sh runs here and skips there.
+  # That asymmetry is why the test stage names its skips.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: test
+        run: make test
+
+  # Discovery against the mock's /api/tags rather than a host Ollama.
+  # Without this the e2e stage skips on every hosted run, and a skip is
+  # not evidence of anything.
+  #
+  # The mock prints its bound port on the first stdout line, so the port
+  # is read back rather than guessed -- guessing races anything else on
+  # the runner, since the check and the bind would not be atomic.
+  e2e-mock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: start the mock provider
+        run: |
+          python3 scripts/tools/mock_openai_backend.py --port 0 > mock.port 2>mock.log &
+          echo $! > mock.pid
+          for _ in $(seq 1 50); do
+            [ -s mock.port ] && break
+            sleep 0.1
+          done
+          port="$(head -n1 mock.port)"
+          if [ -z "$port" ]; then
+            echo "::error::mock did not report a port"; cat mock.log; exit 1
+          fi
+          echo "OPENCODE_OLLAMA_TAGS_URL=http://127.0.0.1:$port/api/tags" >> "$GITHUB_ENV"
+          echo "mock listening on $port"
+      - name: e2e
+        run: |
+          set -o pipefail
+          make e2e | tee e2e.out
+          # A SKIPPED stage exits 0, so without this the job goes green
+          # when the mock dies between starting and running -- reporting
+          # a skip as a pass, which is the failure this project exists to
+          # catch. The mock is the whole reason the stage can run here,
+          # so a skip means the setup broke.
+          if grep -q 'e2e: SKIPPED' e2e.out; then
+            echo "::error::e2e skipped -- the mock provider was supposed to make that impossible"
+            cat mock.log || true
+            exit 1
+          fi
+      - name: stop the mock provider
+        if: always()
+        run: kill "$(cat mock.pid)" 2>/dev/null || true
+
+  # The containerised path: `opencode serve` in Docker, pointed at the
+  # mock running on the host. This is the only job that exercises the
+  # compose stack and scripts/e2e_session_probe.py; `make test` runs
+  # opencode as a bare subprocess and never touches either.
+  #
+  # NOT REHEARSED BEFORE ITS FIRST RUN, and worth saying plainly:
+  # rehearsing it needs the mock on the Docker host, and the environment
+  # this was written from has a worker container with no socket. Every
+  # other check in this workflow was executed before being committed.
+  # The guard on the containers step exists because of that.
+  containers-mock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: start the mock provider on the host
+        run: |
+          python3 scripts/tools/mock_openai_backend.py --port 0 > mock.port 2>mock.log &
+          echo $! > mock.pid
+          for _ in $(seq 1 50); do
+            [ -s mock.port ] && break
+            sleep 0.1
+          done
+          port="$(head -n1 mock.port)"
+          if [ -z "$port" ]; then
+            echo "::error::mock did not report a port"; cat mock.log; exit 1
+          fi
+          echo "MOCK_PORT=$port" >> "$GITHUB_ENV"
+          echo "mock listening on $port"
+
+      # The config goes in RUNNER_TEMP rather than the checkout: compose
+      # mounts OPENCODE_GLOBAL_CONFIG by absolute host path, so it need
+      # not live in the repo, and keeping it out means no step here
+      # dirties the worktree.
+      #
+      # The provider block matches the one test_run_eval_client_e2e.py
+      # writes, which is proven against this mock. The host is
+      # host.docker.internal rather than 127.0.0.1: the server runs in a
+      # container, and compose already maps that name to the bridge
+      # gateway for this service.
+      - name: point the container at the mock
+        run: |
+          mkdir -p auth-data results/discovered
+          python3 - "$MOCK_PORT" "$RUNNER_TEMP/opencode.json" <<'PY'
+          import json, sys
+          port, out = sys.argv[1], sys.argv[2]
+          with open(out, "w") as fh:
+              json.dump({
+                  "$schema": "https://opencode.ai/config.json",
+                  "provider": {
+                      "mock": {
+                          "npm": "@ai-sdk/openai-compatible",
+                          "name": "Mock",
+                          "options": {
+                              "baseURL": f"http://host.docker.internal:{port}/v1",
+                              "apiKey": "mock",
+                          },
+                          "models": {"mock-model": {}},
+                      }
+                  },
+              }, fh, indent=2)
+          PY
+
+          # A bind source that does not exist makes Docker create an
+          # empty DIRECTORY at that path rather than failing -- the
+          # phantom-directory case docker-compose.yml documents. This
+          # stub is what stops the server crash-looping on missing
+          # credentials. It authenticates nothing.
+          echo '{}' > auth-data/auth.json
+
+          printf 'OPENCODE_MODEL_PROVIDER=mock\nOPENCODE_MODEL_ID=mock-model\n' \
+            > results/discovered/discovered-model.env
+
+          {
+            echo "OPENCODE_GLOBAL_CONFIG=$RUNNER_TEMP/opencode.json"
+            echo "HARNESS_ROOT=$GITHUB_WORKSPACE"
+            echo "HOST_UID=$(id -u)"
+            echo "HOST_GID=$(id -g)"
+          } >> "$GITHUB_ENV"
+
+      - name: containers
+        run: |
+          set -o pipefail
+          make containers | tee containers.out
+          # The stage returns 2 (SKIPPED) when docker is absent, and this
+          # runner has docker -- so a skip means the detection broke, not
+          # that the check was inapplicable.
+          if grep -q 'containers: SKIPPED' containers.out; then
+            echo "::error::containers skipped on a runner that has docker"
+            exit 1
+          fi
+
+      - name: logs on failure
+        if: failure()
+        run: |
+          docker compose logs server || true
+          cat mock.log || true
+
+      - name: stop
+        if: always()
+        run: |
+          docker compose down -v || true
+          kill "$(cat mock.pid)" 2>/dev/null || true

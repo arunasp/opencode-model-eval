@@ -21,3 +21,8 @@ pycodestyle==2.12.1
 # particular is fixed by restructuring code, which is a change to review
 # rather than apply. Invoke with an explicit --select.
 autopep8==2.3.1
+
+# Used by scripts/tools/workflow_check.py to parse
+# .github/workflows/*.yml. A malformed workflow does not fail loudly --
+# GitHub declines to run it, and the repository quietly stops having CI.
+pyyaml==6.0.2

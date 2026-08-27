@@ -93,22 +93,37 @@ points the containers provide. Each falls back to the equivalent
 directory in the checkout when its container path is absent, and each
 can be overridden with `TASK_SUITE_DIR`, `RESULTS_DIR` or `TOOLS_DIR`.
 
-This matters for more than convenience. `TOOLS_DIR` was previously
-fixed at the container path, so a container started with `--entrypoint`
-(bypassing the mount setup) could not find the scanner, logged a
-warning, and recorded a PASS on an empty findings set -- see README's
-"Known gaps" for why that is worse than an error.
+This matters for more than convenience. A `TOOLS_DIR` fixed at the
+container path means a container started with `--entrypoint` (bypassing
+the mount setup) cannot find the scanner, logs a warning, and records a
+PASS on an empty findings set -- see README's "Known gaps" for why that
+is worse than an error.
 
 ## Optional (development/testing only)
+
+`make deps` installs the pinned dev dependencies from
+`requirements-dev.txt` into a project-local `.venv`: **pycodestyle**
+(run by `make lint`), **autopep8** (invoked by hand with an explicit
+`--select`, never across the whole rule set) and **PyYAML** (used by
+`scripts/tools/workflow_check.py`). They live in the venv rather than
+the image because a cicd_runner worker is discarded after every call,
+and a `.venv` on the bind mount survives where `$HOME` does not.
 
 | Dependency | Why | Notes |
 |---|---|---|
 | **node + npm** | `scripts/test_run_eval_client_e2e.py` installs and runs the `opencode-ai` npm package as part of its end-to-end test | Not needed for normal use. Skips with a clear message if node/npm are absent |
 | Network access to the npm registry (`registry.npmjs.org`) | Same test, to install `opencode-ai` | |
-| ~~Network access to whatever domain `opencode serve` reaches out to~~ | **Disproven 2026-08-27.** This row previously said the e2e test's hang was an unidentified outbound call and that a hang at `POST /session` "is why". It is not. Measured cause: `opencode serve` accepts TCP connections roughly 1.5s before its route layer can serve, and a request landing in that window is received, drained from the socket buffer, and never answered — so no finite timeout catches it. Reproduced on 1.18.3 and 1.18.23; unrelated to egress. The test now waits for an answered HTTP request rather than an open port. `scripts/trace_session_hang.py` is the harness that settled it | No network requirement here at all |
 | **numpy** (host-side, only when running `scripts/tools/test_axiom_cvv_action_detection.py` outside Docker) | That test imports `axiom_cvv_verify.py`, which imports numpy unconditionally for its TF-IDF fallback and for the onnxruntime path | Present inside the Docker image as a transitive dependency of spaCy. `pip install numpy` into whatever venv you use if you want to run this one test file on the host |
 | **shellcheck** | Bash linting; `make lint` skips the check when it is absent | Not required to run the harness |
 | **terraform** binary, as opposed to HCL2-parseable files | `terraform validate` / `plan` / `apply` | Without it, only a brace-balance sanity check is possible, which is not a substitute |
+
+## Continuous integration
+
+`.github/workflows/ci.yml` needs none of the above configured. It calls
+the same `make` targets and points every provider-facing job at
+`scripts/tools/mock_openai_backend.py`, so no Ollama, cloud provider or
+credential is involved and a fork runs it with no secrets. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the job breakdown.
 
 ## Not required
 

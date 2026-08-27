@@ -192,7 +192,7 @@ def _call_with_hard_timeout(fn, timeout_s: float, *args, **kwargs):
     http_post() with a 300s DEFAULT timeout (reasonable for real slow
     model inference in production, not something this test should
     change) -- without this wrapper, the exact hang this test exists
-    to catch (see module docstring's KNOWN ENVIRONMENT LIMITATION)
+    to catch (the readiness race, see the module docstring)
     would make the test itself hang for 5 minutes per call instead of
     failing fast and loud.
 
@@ -324,9 +324,12 @@ class RunEvalClientE2ETests(unittest.TestCase):
             self.fail(
                 f"create_session failed or hung (waited {SESSION_REQUEST_TIMEOUT_S}s): {e}\n"
                 f"opencode serve output:\n{out}\n"
-                "See module docstring's KNOWN ENVIRONMENT LIMITATION -- "
-                "this may be a blocked outbound network call from "
-                "opencode itself, not a bug in this test or the harness."
+                "This is NOT a network problem. The cause was measured on "
+                "2026-08-27: opencode accepts connections ~1.5s before its "
+                "route layer serves, and a request in that window is never "
+                "answered -- see this module's docstring and "
+                "_wait_until_serving(). If this fires despite the readiness "
+                "wait, the wait itself is what to look at."
             )
 
         resp = _call_with_hard_timeout(

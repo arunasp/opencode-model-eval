@@ -200,6 +200,19 @@ stage_lint() {
   done
   log "json parse: done"
 
+  # Workflows are config too, and a malformed one fails silently: GitHub
+  # declines to run it and the repo quietly stops having CI. Runs under
+  # the .venv interpreter because it needs PyYAML; exit 2 means the
+  # venv is absent, which is a skip rather than a failure.
+  local wf_python="python3"
+  [ -x .venv/bin/python3 ] && wf_python=.venv/bin/python3
+  "$wf_python" scripts/tools/workflow_check.py
+  case $? in
+    0) log "workflow parse: done" ;;
+    2) log "workflow check skipped (no PyYAML) -- run 'make deps'" ;;
+    *) rc=1 ;;
+  esac
+
   return "$rc"
 }
 

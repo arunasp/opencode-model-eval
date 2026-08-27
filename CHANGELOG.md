@@ -41,6 +41,24 @@ Tagged versions are created after merging to `main`, per
 
 ### Added
 
+- `.github/workflows/ci.yml` runs the same `make` targets on every push
+  to `main` and every pull request, in four jobs: `checks` (lint, prose,
+  verify), `test`, `e2e-mock` and `containers-mock`. No model is called
+  from any of them, so CI works on a fork with no secrets. The
+  mock-backed jobs assert their stage did not SKIP, since a skipped
+  stage exits 0 and would otherwise report a skip as a pass.
+- `scripts/tools/workflow_check.py`, run by `make lint`: parses the
+  workflows, checks heredocs inside `run:` blocks terminate at column 0,
+  and compiles Python heredoc bodies. A malformed workflow does not fail
+  loudly — GitHub declines to run it and the repository quietly stops
+  having CI.
+- `scripts/tools/mock_openai_backend.py` serves Ollama's native
+  `/api/tags` alongside the OpenAI routes, and gained a `__main__` that
+  prints its bound port on the first stdout line. It was a library
+  exposing only `make_server()`; a CI job needs it alive across separate
+  `make` invocations, and `--port 0` with the port read back avoids
+  guessing one.
+
 - `scripts/tools/capture_proxy.py` records the resolved system prompt
   and tool definitions sent to the provider. opencode assembles both per
   request and does not persist them, so the outbound request is the only
@@ -59,6 +77,16 @@ Tagged versions are created after merging to `main`, per
   `OPENCODE_CAPTURE_NO_PROXY`.
 
 ### Changed
+
+- The e2e hang is no longer attributed to a blocked outbound call.
+  Earlier entries and a `REQUIREMENTS.md` dependency row both said the
+  mock backend's empty request log pointed at egress from opencode's own
+  startup path. Measurement disproved it: the cause is the readiness
+  race above, reproduced on 1.18.3 and 1.18.23 with no network
+  involvement. The dependency row is gone — `REQUIREMENTS.md` states what
+  is required, not what was once believed — and the failure message in
+  `test_run_eval_client_e2e.py` no longer sends a reader after a network
+  problem that does not exist.
 
 - `scripts/test_run_eval_client_e2e.py` pins opencode 1.18.23, matching
   the image. The flat-JSON test asserts the harness detects a

@@ -114,7 +114,7 @@ machine, in a sandbox, and in a CI worker carrying different toolchains.
 
 | Target | What it does |
 |---|---|
-| `make lint` | shellcheck, `py_compile`, JSON parse |
+| `make lint` | shellcheck, `py_compile`, pycodestyle, JSON and workflow parse |
 | `make test` | every `scripts/test_*` suite, reporting how many executed and naming any that did not |
 | `make verify` | repository invariants: the Compose resolver is the only call path, no host paths in tracked files, bind sources anchored to `HARNESS_ROOT`, no uncommitted file-mode changes |
 | `make e2e` | discovery against a live Ollama; skips when none is reachable |
@@ -123,6 +123,7 @@ machine, in a sandbox, and in a CI worker carrying different toolchains.
 | `make exec-bits` | restores executable bits recorded in the index |
 | `make ci` | lint, prose, test, verify, e2e and client |
 | `make prose` | filler-word ratchet over the docs |
+| `make deps` | dev dependencies into a project-local `.venv` |
 
 `containers` is not part of `ci`: it starts and stops containers, which
 is an action to ask for rather than a side effect of running checks. It

@@ -34,8 +34,10 @@ title call as the real one; logged loudly rather than failing silently.
 
 from __future__ import annotations
 
+import argparse
 import http.server
 import json
+import sys
 import time
 
 
@@ -55,6 +57,20 @@ class OpenAICompatibleMockHandler(http.server.BaseHTTPRequestHandler):
             body = json.dumps(
                 {"object": "list", "data": [{"id": "mock-model", "object": "model"}]}
             ).encode()
+            self._send_json(200, body)
+        elif self.path == "/api/tags":
+            # Ollama's NATIVE endpoint, not an OpenAI one. Served here so
+            # the e2e stage's discovery path can run somewhere without a
+            # host Ollama -- GitHub Actions, most obviously. Without it,
+            # that stage skips on every hosted run and a skip is not
+            # evidence of anything.
+            #
+            # The shape matches what discover_local_ollama_models.py
+            # reads: a `models` list whose entries carry `name`. Extra
+            # fields Ollama sends are omitted deliberately -- a mock that
+            # invents fields it was never asked for lets a consumer come
+            # to depend on something the real service may not send.
+            body = json.dumps({"models": [{"name": "mock-model:latest"}]}).encode()
             self._send_json(200, body)
         else:
             self.send_response(404)
@@ -164,10 +180,44 @@ class OpenAICompatibleMockHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def make_server(port: int, mode: str, reply_text: str) -> http.server.HTTPServer:
+def make_server(port: int, mode: str, reply_text: str) -> tuple[http.server.HTTPServer, type]:
     handler_cls = type(
         "ConfiguredHandler",
         (OpenAICompatibleMockHandler,),
         {"mode": mode, "reply_text": reply_text, "requests_log": []},
     )
     return http.server.HTTPServer(("127.0.0.1", port), handler_cls), handler_cls
+
+
+def main(argv=None) -> int:
+    """Run the mock standalone, for callers that cannot import it.
+
+    The e2e test imports make_server() directly; a CI job cannot, because
+    it needs the backend alive across separate `make` invocations. Prints
+    the bound port on stdout as its first line so a caller passing
+    --port 0 can read back what the kernel chose, rather than racing to
+    guess a free one.
+    """
+    parser = argparse.ArgumentParser(description="Run the mock provider backend.")
+    parser.add_argument("--port", type=int, default=0,
+                        help="0 (the default) lets the kernel choose; the "
+                             "chosen port is printed on the first stdout line")
+    parser.add_argument("--mode", choices=("sse", "flat"), default="sse",
+                        help="sse is conformant; flat is the fault injector "
+                             "described in this module's docstring")
+    parser.add_argument("--reply", default="mock reply")
+    args = parser.parse_args(argv)
+
+    server, _handler = make_server(args.port, args.mode, args.reply)
+    print(server.server_address[1], flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
