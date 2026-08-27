@@ -35,6 +35,7 @@ run_stage() {
     lint) stage_lint ;;
     test) stage_test ;;
     verify) stage_verify ;;
+    e2e) stage_e2e ;;
     *) log "unknown stage: $name"; return 1 ;;
   esac
   rc=$?
@@ -171,12 +172,109 @@ stage_verify() {
     rc=1
   fi
 
+  # Absorbed from the former ad-hoc verify.sh scratch script (checks
+  # 1-4 there -- deterministic, no server needed, unlike check 5 which
+  # is now stage_e2e below). Confirms scripts/lib/opencode-global-config.sh
+  # is genuinely wired into all three of its real call sites, and that
+  # its own default-resolution behavior actually works both ways --
+  # not just that the file exists.
+  local sourced_by
+  sourced_by="$(grep -l "source scripts/lib/opencode-global-config.sh" \
+    harness-control.sh scripts/select-and-run-eval.sh scripts/tf-select-and-run-eval.sh 2>/dev/null | wc -l)"
+  if [ "$sourced_by" = "3" ]; then
+    log "opencode-global-config.sh sourced by all 3 real call sites"
+  else
+    log "opencode-global-config.sh sourced by only $sourced_by/3 expected call sites"
+    rc=1
+  fi
+
+  local resolved_default expected_default
+  resolved_default="$(env -u OPENCODE_GLOBAL_CONFIG bash -c     'source scripts/lib/opencode-global-config.sh; echo "$OPENCODE_GLOBAL_CONFIG"')"
+  expected_default="$HOME/.config/opencode/opencode.json"
+  if [ "$resolved_default" = "$expected_default" ]; then
+    log "default resolves correctly when unset ($expected_default)"
+  else
+    log "default resolution wrong: got '$resolved_default', expected '$expected_default'"
+    rc=1
+  fi
+
+  local preserved
+  preserved="$(OPENCODE_GLOBAL_CONFIG=/tmp/x bash -c     'source scripts/lib/opencode-global-config.sh; echo "$OPENCODE_GLOBAL_CONFIG"')"
+  if [ "$preserved" = "/tmp/x" ]; then
+    log "an already-set value is left untouched"
+  else
+    log "an already-set value was overwritten: got '$preserved', expected '/tmp/x'"
+    rc=1
+  fi
+
+  local make_recipe
+  make_recipe="$(env -u OPENCODE_GLOBAL_CONFIG make --no-print-directory --eval='p: ; @echo \$(OPENCODE_GLOBAL_CONFIG)' p 2>/dev/null)"
+  if [ "$make_recipe" = "$expected_default" ]; then
+    log "Makefile resolves the same default ($expected_default)"
+  else
+    log "Makefile default mismatch: got '$make_recipe', expected '$expected_default'"
+    rc=1
+  fi
+
+  return "$rc"
+}
+
+stage_e2e() {
+  local rc=0
+
+  # Absorbed from the former ad-hoc verify.sh (check 5 there) -- the
+  # one genuinely e2e check, needing a real Ollama to mean anything.
+  # discover_local_ollama_models.py is already documented to degrade
+  # gracefully (writes the base config unchanged, never hard-fails, if
+  # Ollama is unreachable -- confirmed via its own --help text, not
+  # assumed) -- so THIS stage's own job is to distinguish "nothing to
+  # discover against" (SKIP, exit 2, matching the jq-missing pattern
+  # elsewhere in this file) from "a real Ollama answered and the
+  # discovered model list actually came back populated" (a real PASS,
+  # not just "the script did not crash").
+  local tags_url="${OPENCODE_OLLAMA_TAGS_URL:-http://localhost:11434/api/tags}"
+  if ! python3 -c "
+ import sys, urllib.request
+ try:
+     urllib.request.urlopen('$tags_url', timeout=2)
+ except Exception:
+     sys.exit(1)
+ " 2>/dev/null; then
+    log "Ollama not reachable at $tags_url -- skipping (set OPENCODE_OLLAMA_TAGS_URL to point elsewhere)"
+    return 2
+  fi
+
+  local scratch base_config output
+  scratch="$(mktemp -d)"
+  base_config="$scratch/base.json"
+  output="$scratch/runtime.json"
+  echo '{"provider":{"local/ollama":{"models":{}}}}' > "$base_config"
+
+  if ! python3 scripts/discover_local_ollama_models.py       --base-config "$base_config" --ollama-tags-url "$tags_url"       --output "$output" --provider-key local/ollama --timeout 3; then
+    log "discover_local_ollama_models.py exited non-zero against a reachable Ollama"
+    rc=1
+  else
+    local model_count
+    model_count="$(python3 -c "
+ import json
+ data = json.load(open('$output'))
+ print(len(data.get('provider', {}).get('local/ollama', {}).get('models', {})))
+ ")"
+    if [ "$model_count" -gt 0 ]; then
+      log "local model list populated: $model_count model(s) discovered"
+    else
+      log "Ollama answered but zero models were discovered -- either genuinely none pulled, or a real regression"
+      rc=1
+    fi
+  fi
+
+  rm -rf "$scratch"
   return "$rc"
 }
 
 usage() {
   cat <<USAGE
-usage: tools/pipeline.sh [lint|test|verify|all]
+usage: tools/pipeline.sh [lint|test|verify|e2e|all]
 USAGE
 }
 
@@ -186,10 +284,12 @@ main() {
     lint) run_stage lint ;;
     test) run_stage test ;;
     verify) run_stage verify ;;
+    e2e) run_stage e2e ;;
     all)
       run_stage lint
       run_stage test
       run_stage verify
+      run_stage e2e
       ;;
     -h|--help) usage; return 0 ;;
     *) usage; return 1 ;;

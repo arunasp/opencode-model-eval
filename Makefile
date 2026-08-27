@@ -44,7 +44,7 @@
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
         tf-jupyter-up tf-jupyter-down \
-        lint test verify ci
+        lint test verify e2e ci
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -74,7 +74,8 @@ help:
 	@echo "make lint                          shellcheck, py_compile, config parse"
 	@echo "make test                          run every scripts/test_* suite"
 	@echo "make verify                        assert the Compose resolver is the only call path"
-	@echo "make ci                            lint, test and verify in one run"
+	@echo "make e2e                           real end-to-end check against a live Ollama, skips if none reachable"
+	@echo "make ci                            lint, test, verify and e2e in one run"
 
 # Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
 # does (var.opencode_global_config_path's own default) -- ?= only takes
@@ -102,6 +103,9 @@ test:
 
 verify:
 	@bash tools/pipeline.sh verify
+
+e2e:
+	@bash tools/pipeline.sh e2e
 
 ci:
 	@bash tools/pipeline.sh all
