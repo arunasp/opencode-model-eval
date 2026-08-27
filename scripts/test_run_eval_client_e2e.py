@@ -14,39 +14,43 @@ empirically" claim in run_eval_client.py's docstring. That claim was
 previously made in a prior session with no committed test behind it --
 this closes that gap.
 
+WHY THIS TEST HUNG FOR FIVE WEEKS, and what it actually was. Two
+hypotheses lived here before, both hedged as unconfirmed and both
+wrong: a blocked outbound call from opencode's own startup path, and a
+cold npm cache pushing session creation past the deadline. Neither was
+ever tested, and the label became the premise every later reader
+reasoned from -- including three more wrong guesses on 2026-08-27
+before anyone measured it.
+
+MEASURED, 2026-08-27. An open TCP port is not a ready server.
+opencode's listener accepts connections roughly 1.5s before its route
+layer can serve, and a request landing inside that window is accepted,
+has its bytes drained out of the kernel receive buffer, and is then
+never answered -- not answered late. The process sits at ~1% of a core
+meanwhile and its own log records nothing, because the request never
+reaches a handler. Post 0s after the port opens: blocked past 40s,
+every time. Post 5s after: HTTP 200 in ~120ms. Reproduced identically
+on 1.18.3 and 1.18.23, so it is not version-specific, and the harness's
+own long-running server never shows it because real requests arrive
+long after startup.
+
+The original commit (380f459) observed the right thing and drew the
+wrong conclusion from it: "the mock backend's request log stays
+completely empty -- opencode never reaches the configured provider" is
+exactly what a request wedged before reaching a handler looks like. It
+was read as a network block instead. Nothing about the network was ever
+at fault; models.dev IS unreachable from a restricted environment (403,
+confirmed in both a worker and a sandbox) and is irrelevant to this.
+
+_wait_until_serving() below is the fix, and it is why this test now
+passes at all. If it ever hangs again, the cause is NOT this: check
+whether the readiness wait returned, then read opencode's own log at
+$HOME/.local/share/opencode/log/opencode.log -- the diagnosis has
+appeared there every time and this test used to discard it, printing
+only the subprocess pipe, which carries two lines.
+
 Requires: node + npm on PATH, and network access to the npm registry
-(registry.npmjs.org) to install opencode-ai on first run, PLUS
-whatever network access opencode's own `serve`/session-creation path
-needs internally (see KNOWN ENVIRONMENT LIMITATION below).
-
-KNOWN ENVIRONMENT LIMITATION, found while building this test: in a
-network-restricted sandbox (only specific domains allowlisted, e.g.
-npmjs.org/registry.npmjs.org but NOT opencode.ai), `POST /session`
-hung indefinitely and the mock backend's request log stayed completely
-empty -- meaning opencode never even reached the configured provider.
-This points at an outbound call opencode itself makes during session
-creation (telemetry/update-check, unconfirmed which) to a domain
-outside a restricted allowlist, with no fast-fail/offline mode
-observed. Isolated by testing the mock backend directly (bypassing
-opencode entirely) -- confirmed correct on its own: valid /v1/models
-response, valid SSE chunk stream. The failure is entirely within
-opencode's own startup path, not this test's mock or harness code.
-
-If this test hangs/times out in your environment: check whether
-opencode.ai (or another opencode-controlled domain) needs to be
-network-reachable, or run with full/unrestricted egress. This test
-uses a hard subprocess timeout specifically so a repeat of that
-failure mode fails loudly and fast instead of hanging your CI.
-
-SECOND, DISTINCT CAUSE confirmed live (2026-08-19, cicd-runner): a
-cold run (fresh npm cache, first invocation on a new worker) can push
-session creation past SESSION_REQUEST_TIMEOUT_S on genuine startup
-jitter alone, with opencode.ai fully reachable throughout (confirmed
-via a direct TCP check at the time of the failure) -- an immediate
-re-run with a warm npm cache passed cleanly. A single failing run does
-not distinguish this from the network-block cause above; check
-reachability directly (cheap), and note whether this was the
-environment's first invocation, before concluding which applies.
+(registry.npmjs.org) to install opencode-ai on first run.
 
 Usage:
     python3 scripts/test_run_eval_client_e2e.py
@@ -65,12 +69,17 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-OPENCODE_VERSION = "1.18.3"  # matches the version the original empirical
-                              # claim in run_eval_client.py's docstring
-                              # was made against
+# Pinned to the current stable release. It was previously 1.18.3 -- the
+# version the original schema claim was made against -- so this suite
+# verified a response schema for a build nobody ran, twenty releases
+# behind. Bump this and the image's OPENCODE_REF together; a suite that
+# tests a different build than it ships is testing nothing useful.
+OPENCODE_VERSION = "1.18.23"
 SERVER_STARTUP_TIMEOUT_S = 15
 # Confirmed live via cicd-runner (2026-08-19): a cold run (fresh npm
 # cache, first invocation on a new worker) took 37.966s wall-clock for
@@ -87,6 +96,54 @@ SERVER_STARTUP_TIMEOUT_S = 15
 # rule out), then consider whether this was the environment's first
 # invocation.
 SESSION_REQUEST_TIMEOUT_S = 30
+
+
+# MEASURED 2026-08-27, and it retires both hypotheses in the docstring
+# above. An open TCP port is not a ready server: opencode's listener
+# accepts connections roughly 1.5s before its route layer can serve, and
+# a request landing inside that window is accepted, has its bytes drained
+# out of the kernel receive buffer, and is then never answered at all --
+# not answered late. The process sits at ~1% of a core while it happens,
+# and its own log records nothing, because the request never reaches a
+# handler. Post 0s after the port opens: blocked past 40s, every time.
+# Post 5s after: HTTP 200 in ~120ms. Reproduced identically on 1.18.3 and
+# 1.18.23, so it is not version-specific, and the harness's own
+# long-running server never shows it because real requests arrive long
+# after startup.
+#
+# That is why raising SESSION_REQUEST_TIMEOUT_S never helped and why
+# reaping the subprocess did not move the hang rate: the request is
+# wedged, so no finite deadline can catch it. Two attempts is the
+# measured cost of readiness -- the first times out in the window, the
+# second answers.
+READY_ATTEMPT_TIMEOUT_S = 2
+READY_DEADLINE_S = 60
+
+
+def _wait_until_serving(base_url: str, deadline_s: int = READY_DEADLINE_S):
+    """Block until the server answers an HTTP request, or give up.
+
+    Any HTTP status counts, including an error: this establishes that the
+    route layer is running, not that the endpoint is happy. Each attempt
+    carries its own short timeout so an attempt made inside the dead
+    window is abandoned rather than waited on -- abandoned attempts are
+    cheap here because the server is idle while wedged, and it closes
+    them itself.
+
+    Returns (seconds_waited, attempts), or (None, attempts) on timeout.
+    """
+    started = time.monotonic()
+    attempts = 0
+    while time.monotonic() - started < deadline_s:
+        attempts += 1
+        try:
+            urllib.request.urlopen(f"{base_url}/session", timeout=READY_ATTEMPT_TIMEOUT_S)
+            return round(time.monotonic() - started, 2), attempts
+        except urllib.error.HTTPError:
+            return round(time.monotonic() - started, 2), attempts
+        except Exception:
+            time.sleep(0.5)
+    return None, attempts
 
 
 def _kill_and_reap(proc: subprocess.Popen) -> None:
@@ -229,6 +286,20 @@ class RunEvalClientE2ETests(unittest.TestCase):
             out, _ = proc.communicate(timeout=5)
             self.fail(f"opencode serve never opened its port. Output:\n{out}")
 
+        # The port being open is not the server being ready -- see
+        # READY_ATTEMPT_TIMEOUT_S above. Without this the caller races a
+        # window in which its request is silently wedged forever.
+        ready_s, attempts = _wait_until_serving(f"http://127.0.0.1:{serve_port}")
+        if ready_s is None:
+            proc.kill()
+            out, _ = proc.communicate(timeout=5)
+            self.fail(
+                f"opencode serve opened its port but never answered an HTTP "
+                f"request within {READY_DEADLINE_S}s ({attempts} attempts). "
+                f"Output:\n{out}"
+            )
+        print(f"[e2e] server ready in {ready_s}s after {attempts} attempt(s)", flush=True)
+
         return proc, serve_port, scratch
 
     def test_sse_response_matches_documented_schema(self):
@@ -271,12 +342,37 @@ class RunEvalClientE2ETests(unittest.TestCase):
         )
         self.assertEqual(tools, [], "no tool calls expected from this mock")
 
-    def test_flat_json_response_reproduces_documented_gotcha(self):
-        """The negative case documented in the module docstring: if the
-        backend ignores stream:true and returns flat synchronous JSON,
-        opencode is documented to silently produce a response with NO
-        text part (not an error). Confirms that's still true, rather
-        than asserting it from memory of a prior session."""
+        # TOKEN ACCOUNTING, previously never exercised. The mock did not
+        # answer opencode's own `stream_options` request with a usage
+        # chunk, so Session.getUsage() fell back to an empty Usage and
+        # every run here recorded zeros -- which looked exactly like a
+        # correct result. Asserting non-zero is what makes the mock's
+        # conformance checkable rather than assumed.
+        tokens = resp.get("info", {}).get("tokens") or {}
+        self.assertTrue(
+            tokens.get("input", 0) > 0 and tokens.get("output", 0) > 0,
+            f"usage did not reach the message -- either the mock stopped sending the "
+            f"usage chunk or opencode stopped reading it. tokens={tokens}",
+        )
+
+    def test_flat_json_backend_is_caught_as_a_provider_fault(self):
+        """A backend that ignores stream:true is detected by the HARNESS,
+        not left to time out as a model failure.
+
+        This replaces an assertion that opencode returns an empty reply
+        in this case. That WAS true through 1.18.20 and is no longer:
+        1.18.21 added "unknown" to the loop-exit exclusion list in
+        session/prompt.ts, deliberately, so a provider that reports no
+        finish reason can no longer end a turn silently -- which is the
+        false-pass shape this whole project exists to catch, closed
+        upstream. The old assertion pinned the pre-fix bug.
+
+        What is left is a harness problem: opencode keeps prompting, one
+        assistant message per provider call, and without detection the
+        tier ends as a 300s timeout scored as a model result while the
+        provider is charged for every call. Thresholds are lowered here
+        so the test costs seconds rather than a minute.
+        """
         mock_port, handler_cls = self._start_mock_backend("flat", "should not appear")
         proc, serve_port, scratch = self._start_opencode_serve(mock_port)
 
@@ -284,33 +380,30 @@ class RunEvalClientE2ETests(unittest.TestCase):
         import importlib
         import run_eval_client as rec
         importlib.reload(rec)  # avoid stale module state across test methods
+        rec.UNPRODUCTIVE_LOOP_MESSAGES = 5
+        rec.UNPRODUCTIVE_CHECK_INTERVAL_S = 2
 
         base_url = f"http://127.0.0.1:{serve_port}"
-        try:
-            session_id = _call_with_hard_timeout(
-                rec.create_session, SESSION_REQUEST_TIMEOUT_S, base_url
-            )
-        except (RuntimeError, concurrent.futures.TimeoutError) as e:
-            proc.kill()
-            out, _ = proc.communicate(timeout=5)
-            self.fail(
-                f"create_session failed or hung (waited {SESSION_REQUEST_TIMEOUT_S}s): "
-                f"{e}\nopencode serve output:\n{out}"
-            )
+        session_id = _call_with_hard_timeout(
+            rec.create_session, SESSION_REQUEST_TIMEOUT_S, base_url
+        )
 
-        resp = _call_with_hard_timeout(
-            rec.send_message, SESSION_REQUEST_TIMEOUT_S,
+        result, fault, events = _call_with_hard_timeout(
+            rec.quota_aware_send_message, SESSION_REQUEST_TIMEOUT_S,
             base_url, session_id, "mock", "mock-model", "mock-probe-marker: hello"
         )
-        text, tools = rec.extract_reply(resp)
 
-        self.assertEqual(
-            text, "",
-            "documented gotcha did not reproduce -- either opencode's "
-            "behavior changed, or the flat-JSON mock mode is no longer "
-            "accurate. Update the docstring in run_eval_client.py if "
-            "this genuinely changed upstream, don't just loosen this "
-            f"assertion. Raw response:\n{json.dumps(resp, indent=2)}",
+        self.assertIsNone(result, "a non-conforming backend must not yield a usable reply")
+        self.assertIsNotNone(
+            fault,
+            "the harness did not detect the loop -- it would have run to the "
+            "tier timeout and been scored as a model failure",
+        )
+        self.assertEqual(fault["kind"], "unproductive_loop")
+        self.assertIn("finish=unknown", fault["message"])
+        self.assertTrue(
+            any(e.get("type") == "unproductive_loop" for e in events),
+            f"the tier record must carry the evidence, got: {events}",
         )
 
 
