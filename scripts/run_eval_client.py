@@ -24,9 +24,10 @@ REQUEST SCHEMA -- confirmed from opencode's actual source, not guessed:
     -> SessionV1.WithParts
 
 RESPONSE SCHEMA -- CONFIRMED empirically, not just from source. Ran a
-real opencode serve instance (opencode-ai@1.18.3 via npm) against a
-mock OpenAI-compatible backend under my own control and captured the
-actual response. THIS IS NOW A COMMITTED, RE-RUNNABLE TEST, not just a
+real opencode serve instance (opencode-ai via npm, version pinned in
+scripts/test_run_eval_client_e2e.py) against a mock OpenAI-compatible
+backend under my own control and captured the actual response. THIS IS
+NOW A COMMITTED, RE-RUNNABLE TEST, not just a
 prior session's claim left undocumented in the repo --
 see scripts/test_run_eval_client_e2e.py and
 scripts/tools/mock_openai_backend.py:
@@ -39,16 +40,29 @@ scripts/tools/mock_openai_backend.py:
       ]
     }
 extract_reply()'s primary path (top-level "parts", filter on
-type == "text") matches this exactly. One real thing the first empirical
-attempt got wrong before this was confirmed: opencode's request to the
-backend sets "stream": true, and a mock that responds with a flat
-synchronous JSON body (rather than real SSE chunks) produces a
-step-start/step-finish pair with NO text part at all -- silently wrong,
-not an error. Fixed by having the mock emit actual
-`data: {...}\n\n` SSE chunks. Also observed empirically, worth knowing
-for request-count/cost expectations: opencode fires an extra
-background title-generation call (a short system-prompted request
-asking for a thread title) before the real one, per session.
+type == "text") matches this exactly.
+
+WHAT A NON-CONFORMING BACKEND DOES, corrected 2026-08-27 -- the
+previous text here described behaviour that upstream deliberately
+changed and is no longer true. opencode's request sets "stream": true
+and carries "stream_options" (confirmed on the wire). A backend that
+answers that with a flat synchronous JSON body instead of SSE chunks
+never reports a finish reason, so opencode records finish "unknown".
+Through 1.18.20 that silently produced a step-start/step-finish pair
+with no text part. From 1.18.21, "unknown" no longer ends a turn
+(session/prompt.ts:1110-1116, deliberate -- a provider reporting no
+finish reason should not be able to end one silently, which is exactly
+the false-pass shape this harness exists to catch). The turn now never
+ends instead: one assistant message per provider call, measured at
+~15/s, with the only other bound being `agent.steps ?? Infinity`.
+_unproductive_loop() below detects that and aborts the tier as a
+provider-conformance fault rather than letting it score as a model
+result.
+
+Also observed empirically, worth knowing for request-count/cost
+expectations: opencode fires an extra background title-generation call
+(a short system-prompted request asking for a thread title) before the
+real one, per session.
 
 Tool-call part shape specifically was NOT exercised in this empirical
 test (the mock never triggered a tool call) -- extract_reply()'s
@@ -151,6 +165,27 @@ TIER_TIMEOUT_RETRY_LIMIT = int(os.environ.get("OPENCODE_TIER_TIMEOUT_RETRY_LIMIT
 # actual stdout output to once a minute by default while polling
 # itself stays frequent underneath.
 PROGRESS_PRINT_INTERVAL_S = float(os.environ.get("OPENCODE_PROGRESS_PRINT_INTERVAL_S", "60"))
+# THE COUNTERS CAN MOVE WHILE NOTHING PROGRESSES, which is why
+# _progress_is_moving() below cannot catch this case and a second
+# predicate exists. Measured 2026-08-27 against a backend that ignores
+# stream:true: opencode (from 1.18.21, deliberately -- an "unknown"
+# finish no longer ends a turn, so a provider that never reports one is
+# no longer allowed to end it silently) keeps prompting, producing one
+# assistant message per provider call at ~15/s, every one carrying
+# finish "unknown" and no text. 338 assistant messages in 24s, text
+# frozen at 5 characters throughout. `messages` climbs the whole time,
+# so the stall detector reports healthy movement and says nothing.
+#
+# Left alone this ends as a 300s TIMEOUT scored as a model failure,
+# while session.tokens_input -- a sum over turns -- is charged for every
+# one of those calls. That is a provider-conformance fault wearing the
+# costume of a model result, the same false-signal class as a tier-0
+# ERROR from a container off the compose network.
+UNPRODUCTIVE_LOOP_MESSAGES = int(os.environ.get("OPENCODE_UNPRODUCTIVE_LOOP_MESSAGES", "40"))
+# Checked far more often than the 60s heartbeat: at the measured rate a
+# minute is ~900 wasted provider calls. Deliberately not as often as the
+# 5s status poll either, since this one fetches the whole message list.
+UNPRODUCTIVE_CHECK_INTERVAL_S = float(os.environ.get("OPENCODE_UNPRODUCTIVE_CHECK_INTERVAL_S", "15"))
 
 
 class _QuotaExhausted(Exception):
@@ -251,11 +286,39 @@ def http_post(base_url: str, path: str, body: dict, timeout: int = 300) -> dict:
         raise RuntimeError(f"POST {path} failed: network error: {e}") from e
 
 
+# The session object as created, keyed by id. create_session() has this
+# object in hand and previously discarded everything but the id, which
+# threw away the one place a run records WHICH BUILD produced it --
+# `version`, plus projectID/directory. Kept here rather than returned,
+# because create_session() is the seam every fake in scripts/test_*.py
+# patches: moving the call site to a different function silently routes
+# those fakes past the patch and the suites go red for a reason that has
+# nothing to do with what they test. Bounded so a long run cannot grow
+# it without limit; a missing entry degrades to an empty dict, never an
+# error.
+_SESSION_INFO_CACHE: dict[str, dict] = {}
+_SESSION_INFO_CACHE_MAX = 64
+
+
+def session_info(session_id: str) -> dict:
+    """The session object recorded at creation, or {} if unknown.
+
+    Empty is the correct answer for a faked create_session(), and
+    run_environment() renders that as null fields rather than failing --
+    provenance is worth recording and never worth failing a run over.
+    """
+    return _SESSION_INFO_CACHE.get(session_id, {})
+
+
 def create_session(base_url: str) -> str:
     resp = http_post(base_url, "/session", {})
     session_id = resp.get("id") or resp.get("sessionID")
     if not session_id:
         raise RuntimeError(f"session creation response had no id/sessionID field: {resp}")
+    if isinstance(resp, dict):
+        if len(_SESSION_INFO_CACHE) >= _SESSION_INFO_CACHE_MAX:
+            _SESSION_INFO_CACHE.pop(next(iter(_SESSION_INFO_CACHE)), None)
+        _SESSION_INFO_CACHE[session_id] = resp
     return session_id
 
 
@@ -361,6 +424,7 @@ def session_progress(base_url: str, session_id: str, include_children: bool = Tr
         return {}
 
     steps = tools = text_chars = reasoning_chars = 0
+    assistants = finish_unknown = 0
     last_tool = None
     tokens: dict = {}
     for message in messages:
@@ -377,12 +441,21 @@ def session_progress(base_url: str, session_id: str, include_children: bool = Tr
             elif kind == "reasoning":
                 reasoning_chars += len(part.get("text") or "")
         info = message.get("info") or {}
+        if info.get("role") == "assistant":
+            assistants += 1
+            # "unknown" is opencode's value for a provider that reported
+            # no usable finish reason -- counted rather than inspected
+            # ad hoc, because a run of them with no output is the
+            # signature this detector keys on.
+            if info.get("finish") == "unknown":
+                finish_unknown += 1
         if info.get("tokens"):
             tokens = info["tokens"]
 
     snapshot = {"messages": len(messages), "steps": steps, "tools": tools,
                 "last_tool": last_tool, "text_chars": text_chars,
                 "reasoning_chars": reasoning_chars,
+                "assistants": assistants, "finish_unknown": finish_unknown,
                 "input_tokens": tokens.get("input"), "output_tokens": tokens.get("output"),
                 "total_tokens": tokens.get("total")}
 
@@ -445,6 +518,39 @@ def _progress_is_moving(previous: dict, current: dict) -> bool:
         return True                                    # unknown, do not cry wolf
     keys = ("messages", "steps", "tools", "text_chars", "reasoning_chars", "output_tokens")
     return any(previous.get(k) != current.get(k) for k in keys)
+
+
+def _unproductive_loop(previous: dict, current: dict,
+                       threshold: int = UNPRODUCTIVE_LOOP_MESSAGES) -> bool:
+    """Whether the session is generating turns that produce nothing.
+
+    Deliberately NOT the inverse of _progress_is_moving(): that one asks
+    whether any counter changed, and here they do change -- `messages`
+    climbs by hundreds. This asks the narrower question of whether the
+    turns being generated CARRY anything, which is what separates a
+    model working slowly from a provider that cannot end a turn.
+
+    All four conditions must hold, and each excludes a legitimate case:
+      - enough assistant turns with an unreported finish reason that a
+        one-off cannot trip it
+      - the message count is still climbing, so a merely slow tier (no
+        new turns at all) is not caught here -- that is a stall, and
+        _progress_is_moving() already reports it
+      - no new text, reasoning or tool activity, so a model that is
+        genuinely answering is never caught however it reports finish
+
+    Pure, so it is testable without a server.
+    """
+    if not previous or not current:
+        return False
+    if current.get("finish_unknown", 0) < threshold:
+        return False
+    if current.get("messages", 0) <= previous.get("messages", 0):
+        return False
+    for key in ("text_chars", "reasoning_chars", "tools"):
+        if current.get(key, 0) != previous.get(key, 0):
+            return False
+    return True
 
 
 def quota_aware_send_message(base_url: str, session_id: str, provider: str, model_id: str, text: str,
@@ -519,6 +625,8 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
     last_progress_mono = time.monotonic()
     last_status_type = None
     last_progress_snapshot: dict = {}
+    last_unproductive_check = time.monotonic()
+    last_unproductive_snapshot: dict = {}
     while True:
         if done_event.wait(timeout=poll_interval_s):
             break  # worker finished (success or exception) during this poll window
@@ -562,6 +670,33 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
                     "kind": "server_log_error",
                     "message": f"{error_classification}: {log_error_line}",
                 }, events
+
+        if time.monotonic() - last_unproductive_check >= UNPRODUCTIVE_CHECK_INTERVAL_S:
+            # include_children=False deliberately: a subagent doing real
+            # work is exactly the case that must not be mistaken for
+            # this, and merging its counters in would blur the signal.
+            unproductive_snapshot = session_progress(base_url, session_id, include_children=False)
+            if _unproductive_loop(last_unproductive_snapshot, unproductive_snapshot,
+                                  UNPRODUCTIVE_LOOP_MESSAGES):
+                try:
+                    abort_session(base_url, session_id)
+                except RuntimeError:
+                    pass  # best-effort -- we're bailing on this tier regardless
+                done_event.wait(timeout=poll_interval_s)
+                message = (
+                    f"provider produced {unproductive_snapshot.get('finish_unknown')} assistant "
+                    f"turns with finish=unknown and no text, reasoning or tool output "
+                    f"({unproductive_snapshot.get('messages')} messages). The turn cannot end: "
+                    "the backend is not reporting a finish reason, which usually means it is "
+                    "answering a stream:true request with non-streaming JSON. This is a "
+                    "provider-conformance fault, not a model result."
+                )
+                events.append({"timestamp": time.time(), "type": "unproductive_loop",
+                               **unproductive_snapshot})
+                _log(f"aborting tier: {message}")
+                return None, {"kind": "unproductive_loop", "message": message}, events
+            last_unproductive_snapshot = unproductive_snapshot
+            last_unproductive_check = time.monotonic()
 
         status_type = status.get("type")
         now = time.time()
@@ -652,6 +787,141 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             pass  # best-effort -- we're already raising the original error below
         raise exception_holder["value"]
     return result_holder.get("value"), None, events
+
+
+def session_messages(base_url: str, session_id: str, include_children: bool = True) -> dict:
+    """The WHOLE message chain, verbatim, parent and children.
+
+    THE RECORD, not a reduction of it. session_progress() counts this
+    chain and session_tool_calls() keeps only its tool parts; both throw
+    away every assistant turn, reasoning part and step boundary on the
+    way. What survived into results/ was two final response objects --
+    the answer and nothing that produced it -- so a tier could not be
+    re-judged later by anyone, human or otherwise, and a disagreement
+    between two judges could not be traced to what either read.
+
+    Deliberately unfiltered and untruncated: this is the artifact a
+    shadow verification pass reads, and anything dropped here cannot be
+    recovered afterwards. Summarising is the reader's job, not the
+    recorder's.
+
+    Returns {"messages": [...], "children": {child_id: [...]},
+    "error": str | None}. The error field is why a capture is thin
+    rather than leaving the reader to guess -- a missing chain must be
+    a stated gap, never an empty one.
+    """
+    record: dict = {"messages": [], "children": {}, "error": None}
+    try:
+        messages = http_get(base_url, f"/session/{session_id}/message", timeout=60)
+    except Exception as exc:                           # noqa: BLE001
+        record["error"] = f"parent chain unavailable: {type(exc).__name__}: {exc}"
+        return record
+    record["messages"] = messages if isinstance(messages, list) else []
+
+    if not include_children:
+        return record
+    try:
+        children = http_get(base_url, f"/session/{session_id}/children", timeout=30)
+    except Exception as exc:                           # noqa: BLE001
+        record["error"] = f"children unavailable: {type(exc).__name__}: {exc}"
+        return record
+    for child in children if isinstance(children, list) else []:
+        child_id = child.get("id") if isinstance(child, dict) else child
+        if not child_id:
+            continue
+        child_record = session_messages(base_url, child_id, include_children=False)
+        record["children"][child_id] = child_record["messages"]
+        if child_record["error"] and not record["error"]:
+            record["error"] = f"child {child_id}: {child_record['error']}"
+    return record
+
+
+# Instance-level definitions, fetched once per server rather than per
+# tier: /agent, /skill and /command are properties of the running
+# instance, not of a session, and a 25-tier run would otherwise make 75
+# identical requests.
+_DEFINITIONS_CACHE: dict[str, dict] = {}
+
+
+def instance_definitions(base_url: str) -> dict:
+    """The INPUTS opencode assembles its system prompt from.
+
+    WHAT THIS CAN AND CANNOT REACH, established by reading opencode's
+    own source rather than assumed. The array actually sent to the
+    provider is built fresh per request in session/prompt.ts:1263-1272
+    from environment, instructions, MCP instructions and skills, handed
+    to the provider alongside the tool definitions, and NEVER appended
+    to the session. The one persisted `system` message type
+    (core/session/message-updater.ts:141-148) fires on a context update,
+    not on that assembly. So no endpoint and no message chain can yield
+    the resolved prompt: only the outbound provider request carries it.
+
+    What IS reachable is the ingredient list -- the agents, skills and
+    commands the instance has registered. Two runs whose verdicts differ
+    can at least be compared on those, and a skill appearing or
+    disappearing between runs stops being invisible.
+
+    Best-effort per endpoint: one unavailable surface records its own
+    error and the rest are still captured, because a partial ingredient
+    list beats none and a silent gap beats nothing at all.
+    """
+    if base_url in _DEFINITIONS_CACHE:
+        return _DEFINITIONS_CACHE[base_url]
+    definitions: dict = {}
+    for name, path in (("agents", "/agent"), ("skills", "/skill"), ("commands", "/command")):
+        try:
+            definitions[name] = http_get(base_url, path, timeout=15)
+        except Exception as exc:                       # noqa: BLE001
+            definitions[name] = None
+            definitions[f"{name}_error"] = f"{type(exc).__name__}: {exc}"
+    definitions["resolved_system_prompt"] = None
+    definitions["resolved_tool_definitions"] = None
+    definitions["resolution_note"] = (
+        "opencode assembles the system array and tool definitions per request "
+        "(session/prompt.ts) and does not persist them, so they are not "
+        "reachable from any endpoint or from the message chain. Capturing the "
+        "bytes as sent requires recording at the provider boundary."
+    )
+    _DEFINITIONS_CACHE[base_url] = definitions
+    return definitions
+
+
+def run_environment(session_info: dict, provider: str, model_id: str,
+                    base_url: str | None = None) -> dict:
+    """What the answer was produced BY -- the input side of the record.
+
+    A verdict is only comparable against another verdict if both name
+    the build that produced them. opencode selects its system prompt by
+    MODEL ID and ships tool descriptions alongside it, so the
+    instruction set under test is never just the ruleset in this repo,
+    and an upgrade silently changes the experiment. `version` comes
+    from the session object itself rather than being asserted here.
+
+    Best-effort throughout: a missing field is recorded as None, and
+    this never raises -- a run must not fail because its own provenance
+    could not be read.
+    """
+    env = {
+        "opencode_version": session_info.get("version"),
+        "provider_id": provider,
+        "model_id": model_id,
+        "project_id": session_info.get("projectID"),
+        "session_directory": session_info.get("directory"),
+        "harness_commit": None,
+        "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        import subprocess
+        result = subprocess.run(["git", "rev-parse", "HEAD"],
+                                cwd=str(Path(__file__).resolve().parent.parent),
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            env["harness_commit"] = result.stdout.strip()
+    except Exception:                                  # noqa: BLE001
+        pass
+    if base_url:
+        env["definitions"] = instance_definitions(base_url)
+    return env
 
 
 def session_tool_calls(base_url: str, session_id: str, include_children: bool = True) -> list[dict]:
@@ -755,6 +1025,102 @@ def extract_reply(response: dict) -> tuple[str, list[dict]]:
         elif "tool" in ptype.lower():
             tool_calls.append(part)
     return "\n".join(text_chunks), tool_calls
+
+
+# Tool output in the TRANSCRIPT is capped -- the transcript is read by
+# a scanner and by people, and the full bytes live in raw.json's
+# message_chain either way. The cap is stated inline when it bites
+# (see _render_tool), never silent: a scanner cannot distinguish a tool
+# that returned nothing from one whose output was quietly cut, and the
+# previous 2000-char cut said nothing at all.
+TRANSCRIPT_TOOL_OUTPUT_CHARS = int(os.environ.get("OPENCODE_TRANSCRIPT_TOOL_OUTPUT_CHARS", "4000"))
+
+
+def _render_tool(lines: list[str], tool: dict) -> None:
+    name = tool.get("tool") or tool.get("name") or "unknown"
+    status = tool.get("status")
+    lines.append(f"**Tool: {name}**" + (f" (status: {status})" if status else ""))
+    if tool.get("input") is not None:
+        lines.append("**Input:**")
+        lines.append("```json")
+        lines.append(json.dumps(tool["input"], indent=2, default=str))
+        lines.append("```")
+    output = tool.get("output", tool.get("result"))
+    if output is not None:
+        text = str(output)
+        lines.append("**Output:**")
+        lines.append("```")
+        lines.append(text[:TRANSCRIPT_TOOL_OUTPUT_CHARS])
+        if len(text) > TRANSCRIPT_TOOL_OUTPUT_CHARS:
+            lines.append(f"[... {len(text) - TRANSCRIPT_TOOL_OUTPUT_CHARS} more characters -- "
+                         "full output in this tier's raw.json message_chain]")
+        lines.append("```")
+
+
+def _render_message(lines: list[str], message: dict) -> None:
+    """One message, parts in the order the model produced them."""
+    info = message.get("info") or {}
+    role = info.get("role", "unknown")
+    lines.append(f"## {role.capitalize()}")
+    for part in message.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        kind = part.get("type")
+        if kind == "text":
+            lines.append(part.get("text") or "")
+        elif kind == "reasoning":
+            # Kept, and labelled. A model that reasons at length and
+            # answers tersely was previously indistinguishable from one
+            # that did nothing, because only the answer was recorded.
+            lines.append("**Reasoning:**")
+            lines.append(part.get("text") or "")
+        elif kind == "tool":
+            state = part.get("state") or {}
+            _render_tool(lines, {"tool": part.get("tool"), "status": state.get("status"),
+                                 "input": state.get("input"), "output": state.get("output")})
+    if info.get("finish"):
+        lines.append(f"_[finish: {info['finish']}]_")
+    lines.append("")
+
+
+def chain_to_transcript(message_chain: dict) -> str:
+    """The transcript, built from the captured chain.
+
+    WHY THIS REPLACES THE OLD ASSEMBLY. events_to_transcript() below
+    took the two FINAL response objects plus one session-wide tool list,
+    and was called as `setup_tools or session_tools` -- so a setup turn
+    that made any tool call of its own discarded the entire session-wide
+    capture, and the probe turn (the one actually being scored) was
+    handed tool calls from the final response object, which is precisely
+    where tool calls do not appear. The fix for "the transcript cannot
+    contain the evidence it is scanned for" therefore never reached the
+    scored turn.
+
+    Building from the chain removes the attribution question entirely:
+    each part is rendered under the message that produced it, in order,
+    because that is how it is stored. Subagent sessions follow, labelled
+    -- the `task` tool puts real work in a child, and a scanner reading
+    only the parent sees a model that did nothing.
+
+    Pure: takes the captured record, returns text. Testable without a
+    server, which the old assembly was not.
+    """
+    lines: list[str] = []
+    for message in message_chain.get("messages") or []:
+        if isinstance(message, dict):
+            _render_message(lines, message)
+    for child_id, child_messages in (message_chain.get("children") or {}).items():
+        lines.append(f"# Subagent session {child_id}")
+        lines.append("")
+        for message in child_messages or []:
+            if isinstance(message, dict):
+                _render_message(lines, message)
+    if message_chain.get("error"):
+        # A gap in the evidence is stated in the evidence, so a reader
+        # scoring this transcript knows it is incomplete rather than
+        # concluding the model was idle.
+        lines.append(f"_[CAPTURE INCOMPLETE: {message_chain['error']}]_")
+    return "\n".join(lines)
 
 
 def events_to_transcript(setup_message: str, setup_text: str, setup_tools: list[dict],
@@ -1089,7 +1455,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                 setup_resp, quota_info, setup_events = quota_aware_send_message(
                     base_url, session_id, provider, model_id, setup_message)
                 if quota_info is not None:
-                    if quota_info.get("kind") == "server_log_error":
+                    if quota_info.get("kind") in ("server_log_error", "unproductive_loop"):
                         raise _ServerLogError(quota_info["message"], setup_events)
                     raise _QuotaExhausted(quota_info, setup_events)
                 print(_elapsed_marker("setup"), end="", file=sys.stderr, flush=True)
@@ -1097,7 +1463,7 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
                 probe_resp, quota_info, probe_events = quota_aware_send_message(
                     base_url, session_id, provider, model_id, tier_def["prompt"])
                 if quota_info is not None:
-                    if quota_info.get("kind") == "server_log_error":
+                    if quota_info.get("kind") in ("server_log_error", "unproductive_loop"):
                         raise _ServerLogError(quota_info["message"], setup_events + probe_events)
                     raise _QuotaExhausted(quota_info, setup_events + probe_events)
                 print(_elapsed_marker("probe"), end="", file=sys.stderr, flush=True)
@@ -1215,18 +1581,37 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         # see session_tool_calls(). Without this the transcript shows
         # only the answer, and the scanner cannot see whether any
         # verification was attempted.
+        #
+        # CAPTURED BEFORE THE ABORT ABOVE IS FORGOTTEN, and captured in
+        # full: the chain is the evidence, the two response objects are
+        # a summary of its last line each. Nothing here is filtered or
+        # truncated, because a shadow verification pass can only re-read
+        # what was written down, and this is the only place it exists.
         session_tools = session_tool_calls(base_url, session_id)
-        transcript = events_to_transcript(setup_message, setup_text,
-                                          setup_tools or session_tools,
-                                          tier_def["prompt"], probe_text, probe_tools)
+        message_chain = session_messages(base_url, session_id)
+        environment = run_environment(session_info(session_id), provider, model_id, base_url)
+        # BUILT FROM THE CHAIN when there is one -- see
+        # chain_to_transcript() for why the old assembly put the
+        # session's tool calls on the wrong turn. The old path stays as
+        # the fallback for a capture that failed outright, so a scoring
+        # run never loses its transcript because a GET timed out; the
+        # tier record's evidence.capture_error says which was used.
+        if message_chain.get("messages"):
+            transcript = chain_to_transcript(message_chain)
+        else:
+            transcript = events_to_transcript(setup_message, setup_text,
+                                              setup_tools or session_tools,
+                                              tier_def["prompt"], probe_text, probe_tools)
         transcript_path = category_dir / f"tier{tier_num}.transcript.md"
         transcript_path.write_text(transcript)
 
         raw_path = category_dir / f"tier{tier_num}.raw.json"
         raw_path.write_text(json.dumps({
+            "environment": environment,
             "setup": setup_resp,
             "probe": probe_resp,
             "session_tool_calls": session_tools,
+            "message_chain": message_chain,
         }, indent=2, default=str))
 
         scan_result = scan_transcript(transcript_path)
@@ -1238,6 +1623,17 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
             "needs_manual_review": needs_review, "reason": reason,
             "findings": scan_result.get("category_counts", {}),
             "session_id": session_id,
+            "environment": environment,
+            # Named so a reader knows the evidence exists and where,
+            # rather than having to know the file-naming convention.
+            "evidence": {
+                "transcript": transcript_path.name,
+                "raw": raw_path.name,
+                "transcript_source": "message_chain" if message_chain.get("messages") else "final_responses",
+                "messages_captured": len(message_chain.get("messages", [])),
+                "children_captured": len(message_chain.get("children", {})),
+                "capture_error": message_chain.get("error"),
+            },
             "status_events": setup_events + probe_events,
             "captured_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
