@@ -229,9 +229,48 @@ stage_test() {
     # exits 0 and reads as a pass, which is how the e2e suite silently
     # skipped itself in an image without node and a green run was
     # reported for tests that never executed.
-    if out=$(python3 "$t" 2>&1); then
+    #
+    # -v prints each test's NAME beside its result. Without it unittest
+    # prints bare dots, so a suite that deliberately exercises a failure
+    # path -- an unreachable Ollama, a quota response, a provider that
+    # cannot end a turn -- shows an alarming log line next to `....`
+    # with nothing naming the assertion that produced it. A reader then
+    # cannot tell a check that ran and asserted from one that did
+    # nothing, which is the distinction the rest of this pipeline exists
+    # to make.
+    #
+    # -W error::ResourceWarning draws the OTHER line these suites need:
+    # between alarming output that IS the asserted subject and alarming
+    # output that is a genuine defect leaking through. Both read as
+    # scary text, so a leak hides in a suite full of deliberate errors.
+    # Promoting it to a failure separates them by construction -- an
+    # asserted error still prints and passes, an unasserted leak stops
+    # the run. Found the mock server's listening socket surviving every
+    # e2e run, because shutdown() ends serve_forever without closing it.
+    # All suites pass under this as of 2026-08-27, so it is enforcing
+    # rather than baselined.
+    if out=$(python3 -W error::ResourceWarning "$t" -v 2>&1); then
       :
     else
+      rc=1
+    fi
+
+    # -W alone CANNOT catch the leak it was added for, measured rather
+    # than assumed: a ResourceWarning for an unclosed socket is raised
+    # from the object's __del__ during garbage collection, and an
+    # exception in a finalizer cannot propagate -- Python prints
+    # "Exception ignored" and carries on, so no warning filter can turn
+    # it into a failure. Reintroducing the e2e socket leak under -W
+    # error still produced RESULT: ALL PASS. The flag stays because it
+    # does catch warnings raised on the normal path; this scan is what
+    # catches the rest.
+    if printf '%s' "$out" | grep -q 'ResourceWarning\|unclosed <'; then
+      log "  LEAK: $t emitted a ResourceWarning -- something it opened was"
+      log "        never closed. This is a defect in the test or the code"
+      log "        under it, NOT one of the errors the suite asserts on."
+      printf '%s' "$out" | grep 'ResourceWarning\|unclosed <' | head -5 | while read -r l; do
+        log "        $l"
+      done
       rc=1
     fi
     printf '%s\n' "$out"

@@ -62,6 +62,13 @@ class DiscoverLocalOllamaModelsTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.thread.join(timeout=2)
+        # shutdown() ends the serve_forever loop; the listening socket
+        # stays open until server_close(). Omitting it leaks the socket
+        # and Python reports ResourceWarning: unclosed socket. The same
+        # omission existed independently in test_run_eval_client_e2e.py,
+        # which is why the test stage now fails on any ResourceWarning
+        # rather than leaving it to be noticed.
+        cls.server.server_close()
 
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
@@ -138,7 +145,7 @@ class DiscoverLocalOllamaModelsTests(unittest.TestCase):
         discovered = set(result["provider"]["local/ollama"]["models"].keys())
         self.assertEqual(discovered, set(FAKE_MODELS) | {"declared-but-not-installed:latest"})
 
-    def test_unreachable_ollama_falls_back_to_static_list_unchanged(self):
+    def test_unreachable_ollama_is_not_fatal_and_leaves_static_list_unchanged(self):
         output_path = Path(self.tmpdir.name) / "out.json"
         # Port 1 is a real reserved port nothing will ever bind to in a
         # test sandbox -- connection refused is the realistic failure

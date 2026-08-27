@@ -231,6 +231,13 @@ class RunEvalClientE2ETests(unittest.TestCase):
         import threading
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
+        # shutdown() stops the serve_forever loop; it does NOT close the
+        # listening socket. Without server_close() the socket survives
+        # the test and Python reports ResourceWarning: unclosed socket
+        # at doCleanups -- visible in every run of this suite. Cleanups
+        # run last-registered-first, so this pair unwinds in the right
+        # order: stop serving, then close.
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         return port, handler_cls
 
