@@ -2,44 +2,21 @@
 
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 Tagged versions are created after merging to `main`, per
-`docs/BRANCHING.md`'s delivery convention -- see that file's
-"Versioning" section for the MAJOR/MINOR/PATCH rules applied here.
+`docs/BRANCHING.md`. The MAJOR/MINOR/PATCH rules applied here are in
+`docs/VERSIONING.md`.
 
-## [Unreleased]
-
-### Fixed
-
-- `test_run_eval_client_e2e.py` waits for an answered HTTP request
-  rather than an open port. `opencode serve` accepts connections ~1.5s
-  before its route layer serves; a request in that window is received,
-  drained from the socket buffer, and never answered, so no finite
-  timeout catches it. Post at 0s blocks past 40s; post at 5s returns 200
-  in ~120ms. Reproduces on 1.18.3 and 1.18.23.
-- `run_eval_client.py` aborts a tier when the provider cannot end a
-  turn. A backend answering `stream:true` with non-streaming JSON
-  reports no finish reason, so opencode keeps prompting at ~15 calls/s
-  until the tier times out. `_unproductive_loop()` is a separate
-  predicate from `_progress_is_moving()`, which cannot detect this:
-  `messages` climbs, so the session reads as healthy.
-- `run_eval_client.py` captures the whole `/session/{id}/message` chain
-  and child sessions, and builds the transcript from it. Previously only
-  the final response object was recorded, so subagent tool use did not
-  reach the scanner; the scored turn's tools were also read from the
-  response object, where they do not appear.
-- `tools/pipeline.sh`: `stage_e2e` resolves the host through
-  `scripts/hostnet.py`. `localhost` is the worker, not the host, under a
-  CI runner. Its embedded Python is also single-line — indentation
-  damage previously raised `IndentationError` into `/dev/null`, so the
-  stage could not pass in any environment.
-- `tools/pipeline.sh` lints itself, and reports directory artifacts as
-  file count and size rather than a malformed byte count.
-- `scripts/tools/mock_openai_backend.py` emits the usage chunk
-  `stream_options` requests. Without it `Session.getUsage()` returns an
-  empty `Usage` and runs record zero tokens. The e2e test asserts
-  non-zero input and output.
-- `scripts/tools/axiom_cvv_verify.py` usage block names its own path.
+## [1.1.0] - 2026-08-27
 
 ### Added
+
+- The test stage prints each test's name beside its result and fails on
+  any `ResourceWarning`. A suite that exercises failure paths prints text
+  indistinguishable from an unplanned fault, so a defect leaking through
+  is invisible among the deliberate ones; naming every line's assertion
+  and failing on unowned warnings separates them by construction. Not
+  `-W error::ResourceWarning`, which cannot work here: the warning is
+  raised from `__del__` during garbage collection and an exception in a
+  finalizer cannot propagate.
 
 - `.github/workflows/ci.yml` runs the same `make` targets on every push
   to `main` and every pull request, in four jobs: `checks` (lint, prose,
@@ -76,27 +53,6 @@ Tagged versions are created after merging to `main`, per
 - `.env.example` documents `OPENCODE_CAPTURE_PROXY` and
   `OPENCODE_CAPTURE_NO_PROXY`.
 
-### Changed
-
-- The e2e hang is no longer attributed to a blocked outbound call.
-  Earlier entries and a `REQUIREMENTS.md` dependency row both said the
-  mock backend's empty request log pointed at egress from opencode's own
-  startup path. Measurement disproved it: the cause is the readiness
-  race above, reproduced on 1.18.3 and 1.18.23 with no network
-  involvement. The dependency row is gone — `REQUIREMENTS.md` states what
-  is required, not what was once believed — and the failure message in
-  `test_run_eval_client_e2e.py` no longer sends a reader after a network
-  problem that does not exist.
-
-- `scripts/test_run_eval_client_e2e.py` pins opencode 1.18.23, matching
-  the image. The flat-JSON test asserts the harness detects a
-  non-conforming backend; opencode 1.18.21 added `"unknown"` to the
-  loop-exit list in `session/prompt.ts`, and the previous assertion
-  pinned the pre-fix behaviour.
-- The development host name is removed from tracked files. `make verify`
-  fails on it rather than counting it, and excludes itself by pathspec.
-
-### Added
 
 - **Every pipeline run names the files it wrote.** A tool invocation
   returns stdout and stderr; the log the run tee'd everything to was
@@ -168,7 +124,64 @@ Tagged versions are created after merging to `main`, per
   lost, or something unrelated, and tailor the message. Adoption via
   import is deliberately not offered.
 
+### Changed
+
+- The e2e hang is no longer attributed to a blocked outbound call.
+  Earlier entries and a `REQUIREMENTS.md` dependency row both said the
+  mock backend's empty request log pointed at egress from opencode's own
+  startup path. Measurement disproved it: the cause is the readiness
+  race above, reproduced on 1.18.3 and 1.18.23 with no network
+  involvement. The dependency row is gone — `REQUIREMENTS.md` states what
+  is required, not what was once believed — and the failure message in
+  `test_run_eval_client_e2e.py` no longer sends a reader after a network
+  problem that does not exist.
+
+- `scripts/test_run_eval_client_e2e.py` pins opencode 1.18.23, matching
+  the image. The flat-JSON test asserts the harness detects a
+  non-conforming backend; opencode 1.18.21 added `"unknown"` to the
+  loop-exit list in `session/prompt.ts`, and the previous assertion
+  pinned the pre-fix behaviour.
+- The development host name is removed from tracked files. `make verify`
+  fails on it rather than counting it, and excludes itself by pathspec.
+
 ### Fixed
+
+- `test_run_eval_client_e2e.py` waits for an answered HTTP request
+  rather than an open port. `opencode serve` accepts connections ~1.5s
+  before its route layer serves; a request in that window is received,
+  drained from the socket buffer, and never answered, so no finite
+  timeout catches it. Post at 0s blocks past 40s; post at 5s returns 200
+  in ~120ms. Reproduces on 1.18.3 and 1.18.23.
+- `run_eval_client.py` aborts a tier when the provider cannot end a
+  turn. A backend answering `stream:true` with non-streaming JSON
+  reports no finish reason, so opencode keeps prompting at ~15 calls/s
+  until the tier times out. `_unproductive_loop()` is a separate
+  predicate from `_progress_is_moving()`, which cannot detect this:
+  `messages` climbs, so the session reads as healthy.
+- `run_eval_client.py` captures the whole `/session/{id}/message` chain
+  and child sessions, and builds the transcript from it. Previously only
+  the final response object was recorded, so subagent tool use did not
+  reach the scanner; the scored turn's tools were also read from the
+  response object, where they do not appear.
+- `tools/pipeline.sh`: `stage_e2e` resolves the host through
+  `scripts/hostnet.py`. `localhost` is the worker, not the host, under a
+  CI runner. Its embedded Python is also single-line — indentation
+  damage previously raised `IndentationError` into `/dev/null`, so the
+  stage could not pass in any environment.
+- `tools/pipeline.sh` lints itself, and reports directory artifacts as
+  file count and size rather than a malformed byte count.
+- `scripts/tools/mock_openai_backend.py` emits the usage chunk
+  `stream_options` requests. Without it `Session.getUsage()` returns an
+  empty `Usage` and runs record zero tokens. The e2e test asserts
+  non-zero input and output.
+- `scripts/tools/axiom_cvv_verify.py` usage block names its own path.
+- Two test files closed the sockets they opened. `HTTPServer.shutdown()`
+  ends the serve loop and does not close the listening socket;
+  `server_close()` is a separate call. Both leaked on every run.
+- `docs/BRANCHING.md`'s history-rewrite check dereferences annotated
+  tags. `%(objectname)` returns the tag object rather than the commit, so
+  the check as written found branches and missed every release tag.
+
 
 - **The end-to-end suite no longer leaks its `opencode serve`
   process.** Cleanup called `kill()` without a wait, so the child was
@@ -225,9 +238,11 @@ Tagged versions are created after merging to `main`, per
   overridable. The path resolution is fixed; the underlying scoring
   vacuity is not -- see Known Limitations.
 
-### Changed (BREAKING)
+## [1.0.0] - 2026-07-27
 
-- **Removed this project's own static `provider["local/ollama"]["models"]`
+### Changed
+
+- **Breaking:** removed this project's own static `provider["local/ollama"]["models"]`
   list from `config/opencode.base.json` and `config/opencode.git-workspace.json`.**
   Every container that runs opencode now mounts your
   `~/.config/opencode/opencode.json` read-only and merges it *under* the

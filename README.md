@@ -251,5 +251,15 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
   that's a trade-off, not a bug, and the same one Compose's own `eval`
   service already made.
 
+- **Shadow verification is not built.** The faithful session record
+  exists and nothing reads it yet.
+- **The dependency cache volume is designed and disabled.** Enabling
+  it needs the Dockerfile to create `/home/harness/.cache` owned by
+  `WORKER_UID:WORKER_GID` first, or the container writes it as root.
+- **`/session/status` closing mid-loop is unverified.**
+- **CI's `containers-mock` job has never run.** It was authored where
+  the mock cannot reach a Docker host, so its first run on GitHub is
+  its first test.
+
 See [CHANGELOG.md](CHANGELOG.md) for what's already been fixed and
 what's still unverified in detail.

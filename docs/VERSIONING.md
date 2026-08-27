@@ -27,11 +27,22 @@ belongs on the commit that patch set produces.
 |---|---|---|
 | `v0.2.0` | 2026-07-25 | Shared harness image; Terraform and Compose deployment paths; scoped auth extraction, automatic under Terraform; the full test ladder; quota and rate-limit handling; per-run server log capture; `git-workspace` and `jupyter` roles; session TTL reaper; static example notebooks; split `README.md` / `INSTALL.md` / `CHANGELOG.md` / `REQUIREMENTS.md` |
 | `v1.0.0` | 2026-07-27 | Breaking: `local/ollama` models come from the global opencode config rather than a static project list. Requires `OPENCODE_GLOBAL_CONFIG` |
+| `v1.1.0` | 2026-08-27 | Harness defects fixed against measurement (readiness race, unproductive-loop detection, full session capture); provider-request capture proxy; prose and workflow linting; GitHub Actions CI driven entirely by the mock provider; dev dependencies cached in a project-local venv |
 
 `v0.1.0` was planned as a minimal checkpoint and never tagged; the repo
 had moved well past that scope by the time a tag was cut. It stands as
 the implicit baseline `v0.2.0` is additive on top of.
 
-Not covered by any tag to date: agentic and tool-use tasks wired into
-the ladder, cost and latency capture, N-runs and why-chain scoring. See
-README's "Known gaps".
+`v1.0.0`'s CHANGELOG section was never promoted out of `[Unreleased]`
+when the tag was cut, so later work accumulated above it and the release
+looked unrecorded. Promote the section in the same commit that moves the
+tag, or the two disagree silently.
+
+What each release deliberately left undone is **not** in `CHANGELOG.md`.
+Keep a Changelog defines six categories — Added, Changed, Deprecated,
+Removed, Fixed, Security — and refuses a seventh, so undone work has no
+place there: it is not a change. It belongs in README's "Known gaps",
+which is where this project already keeps it.
+
+A breaking change is a `Changed` entry marked `**Breaking:**`, not a
+heading of its own — same reason.
