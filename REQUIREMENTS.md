@@ -63,7 +63,7 @@ explicitly, as every Makefile target does, enables its profile, so
 |---|---|
 | **Terraform >= 1.1.5** | `terraform/versions.tf`'s `required_version` |
 | `kreuzwerker/docker` provider `~> 4.5` | Manages all Docker resources declaratively |
-| `hashicorp/external` provider `~> 2.3` | `data.external.auth_keys` -- automatic credential extraction on `plan`/`apply` |
+| `hashicorp/external` provider `~> 2.3` | `data.external.auth_keys` -- automatic credential extraction on `plan`/`apply`; `data.external.container_conflicts` -- reports containers already holding a managed name, so the precondition on `docker_container.server` fails the plan rather than the apply |
 | `hashicorp/null` provider `~> 3.2` | `null_resource` + `local-exec` for jupyter's connect-URL printing (deliberately not `data "external"`, which would leak into tfstate) |
 
 Providers are pulled automatically by `terraform init` -- nothing to install by hand beyond the `terraform` binary itself.
@@ -81,9 +81,23 @@ Providers are pulled automatically by `terraform init` -- nothing to install by 
 | Dependency | Why |
 |---|---|
 | Network access to `github.com` | `scripts/fetch_embedding_model.sh` clones a GitHub repo with ONNX embedding weights committed in-repo (deliberately avoids a Hugging Face/Ollama runtime dependency). Only matters for the best-case onnxruntime-backed semantic path -- harmless if it fails, `axiom_cvv_verify.py` falls through to its own TF-IDF implementation either way |
-| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`, `setpriv` (the real one from util-linux -- BusyBox ships an applet of that name carrying none of the flags the privilege drop needs). `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click`, `pip install onnxruntime tokenizers numpy` (`axiom_cvv_verify.py` tries this first for its semantic action-detection, falls through to a TF-IDF implementation needing nothing beyond numpy if this genuinely isn't available -- expected on Alpine/musllinux and/or Python 3.14, confirmed no published wheel for either). `jupyter` stage adds `pip install jupyterlab` |
+| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`, `setpriv` (the real one from util-linux -- BusyBox ships an applet of that name carrying none of the flags the privilege drop needs). `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click`, `pip install onnxruntime tokenizers numpy` (`axiom_cvv_verify.py` tries this first for its semantic action-detection, falls through to a TF-IDF implementation needing nothing beyond numpy if this genuinely isn't available -- expected on Alpine/musllinux and/or Python 3.14, confirmed no published wheel for either). `jupyter` stage adds `pip install jupyterlab ipywidgets` (ipywidgets backs `harness_notebook.ModelPicker`; the library degrades to environment/parameter resolution without it, so a notebook still runs in an image that lacks it) |
 
 None of these are host-side installs -- they happen inside the Docker build, listed here so a build failure in an offline/restricted environment points at the right cause.
+
+## Paths inside the container, and outside it
+
+`run_eval_client.py` reads the task suite from `/task-suite`, writes to
+`/results` and runs `cvv_scan.py` from `/opt/harness/tools` -- the mount
+points the containers provide. Each falls back to the equivalent
+directory in the checkout when its container path is absent, and each
+can be overridden with `TASK_SUITE_DIR`, `RESULTS_DIR` or `TOOLS_DIR`.
+
+This matters for more than convenience. `TOOLS_DIR` was previously
+fixed at the container path, so a container started with `--entrypoint`
+(bypassing the mount setup) could not find the scanner, logged a
+warning, and recorded a PASS on an empty findings set -- see README's
+"Known gaps" for why that is worse than an error.
 
 ## Optional (development/testing only)
 

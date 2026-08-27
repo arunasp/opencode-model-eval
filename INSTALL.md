@@ -222,6 +222,90 @@ shares across the server, `discover`, and local Ollama containers; a
 cloud eval run is a one-off `docker run` against that same image with
 whatever provider/model was resolved.
 
+## Running part of the ladder
+
+A full run is 9 categories and 25 tiers, and every tier is a complete
+agentic session -- against a slow local model that is hours, not
+minutes. `run_eval_client.py` takes flags to narrow it:
+
+```bash
+python3 scripts/run_eval_client.py --list                     # categories and tier counts
+python3 scripts/run_eval_client.py --categories 1,2           # by position
+python3 scripts/run_eval_client.py --categories coding        # by id
+python3 scripts/run_eval_client.py --categories 1-3 --tiers 1 # ranges, and tier 1 only
+```
+
+Both accept ids, 1-based positions and ranges. `--tiers` applies to
+every selected category and clamps where a category has fewer tiers,
+since categories differ in depth. An unknown id or an out-of-range
+position is a hard error rather than a silent omission.
+
+A narrowed run announces itself in its own log:
+
+```
+[eval-client] PARTIAL RUN -- selection: training_precedence_resistance[3/3 tiers], verification_depth_disclosure[1/2 tiers]
+```
+
+and records `tiers_available` on each truncated category, so a ceiling
+bounded by the selection cannot later be read as a model limit.
+
+The same values can come from `OPENCODE_EVAL_CATEGORIES` and
+`OPENCODE_EVAL_TIERS`, which is how to pass them through Compose or a
+`docker run` that cannot easily append arguments.
+
+## Writing notebooks against the harness
+
+`scripts/harness_notebook.py` is the interface a notebook should use
+rather than hand-rolling HTTP. It exists because the logic it wraps
+carries fixes that came from real failures -- `extract_reply()` raising
+on an error finish after a context overflow once scored a clean pass
+against an empty transcript, `abort_session()` on every exception path
+after sessions were left retrying server-side, the Ollama warm-up after
+a cold model ate a tier's whole budget. A notebook that reimplements
+those repeats the bugs.
+
+Two interfaces, kept separate because they answer different questions:
+
+```python
+from harness_notebook import OpencodeSession, OllamaModel, list_models, resolve
+
+list_models().show()                       # both sources, marked and grouped
+provider, model = resolve(parameter=MODEL) # papermill param > picker > env
+
+with OpencodeSession(provider=provider, model_id=model) as s:
+    print(s.ask("hi"))                     # goes through opencode: tools, permissions, routing
+
+with OllamaModel("qwen3.8:latest") as m:   # warms before, unloads after
+    m.show()                               # installed / declared / resident
+    m.details()                            # /api/show: context ceiling, quantisation, capabilities
+    m.chat("describe this", images=[png], think=False)
+```
+
+**Which to use.** `OpencodeSession` for anything meant to resemble an
+eval -- it is the path a real run takes. `OllamaModel.chat()` goes
+straight to Ollama's native API, which bypasses opencode entirely: no
+tool use, no permission profile, no provider routing. That is a
+legitimate thing to want (raw behaviour, cold-start measurement, prompt
+iteration) so it is supported, and every reply it records carries
+`via="ollama-direct"` so a mixed set of results stays separable
+afterwards.
+
+**Model selection.** `list_models()` reports both `opencode models
+--verbose` and Ollama's `/api/tags`, marking entries that exist only in
+Ollama -- those have no opencode provider entry, so selecting one fails
+at the first message. `select_model(match=...)` raises when a substring
+matches more than one model rather than picking: on this machine
+`"qwen2.5-coder"` matches two across two providers, and a silent choice
+would attribute results to the wrong one. `ModelPicker` is a Jupyter
+dropdown, and it only ever *sets* a choice -- `resolve()` applies
+precedence so an injected papermill parameter beats the widget and a
+headless run is not at the mercy of whatever the dropdown defaulted to.
+
+`OllamaModel.discover()` reports installed and declared models
+separately along with their disagreement, which is the useful part: a
+model pulled but absent from your global config cannot be routed to,
+and one declared but not pulled fails at the first request.
+
 ## Results
 
 Results land in `results/<provider_modelid>/`, structured per
@@ -232,11 +316,19 @@ results/<provider_modelid>/
 ├── report.json                   # per-category ceiling summary, top-level
 └── <category>/
     ├── tier1.json                 # passed/needs_manual_review/reason/findings
-    ├── tier1.transcript.md        # ## User / ## Assistant transcript, cvv_scan.py-parseable
-    ├── tier1.raw.json             # full request/response JSON, both turns
-    ├── tier2.json                 # only present if tier 1 passed (escalation stopped otherwise)
+    ├── tier1.transcript.md         # ## User / ## Assistant transcript, cvv_scan.py-parseable
+    ├── tier1.raw.json              # full request/response JSON for both turns, plus
+    │                               #   session_tool_calls: every tool call the session
+    │                               #   made, subagent child sessions included
+    ├── tier2.json                  # only present if tier 1 passed (escalation stopped otherwise)
     └── ...
 ```
+
+A `reason` of `SCAN_DID_NOT_RUN` means the tier was never scored --
+`cvv_scan.py` produced no usable result, and the reason says why. It is
+reported as a failure rather than a pass because the pass criteria are
+satisfied trivially by an empty finding set, so a scan that did not
+happen would otherwise look identical to a clean one.
 
 **Reading `report.json`:** each category's `ceiling` is the highest tier
 passed. A category stopping at tier 1 isn't necessarily a capability
@@ -265,12 +357,47 @@ much longer opencode's own next attempt would have needed) and
 flushed, timestamped marker per HTTP round-trip (`[session:+0.3s]`,
 `[setup:+12.1s]`, `[probe:+45.6s]` -- elapsed seconds since the tier
 itself started, not wall-clock) as it happens, not just once the whole
-tier finishes — a single slow LLM response previously looked identical
-to a hung process from the CLI's perspective, and the timing itself
-wasn't visible between request → result → next step. A run that's gone
-silent for several minutes with the log file also showing no new lines
-is the actual signal something's stuck; markers not advancing within a
-single tier for a long time is expected for a slow model, not a bug --
-compare the elapsed second count across tiers to actually see whether
-a given step is unusually slow, instead of only knowing something
-eventually completed.
+tier finishes.
+
+Between those markers the run also prints a heartbeat roughly every
+`OPENCODE_PROGRESS_PRINT_INTERVAL_S` (60s default) for as long as the
+status is unchanged, carrying what the session has actually done:
+
+```
+[eval-client] busy 125s: msgs 15 | steps 12 | subagents 1 | tools 27 | last subagent webfetch:completed | text 1914ch | reasoning 2892ch
+```
+
+Those counters are read from the session's own message list, including
+any subagent the `task` tool dispatched into a child session -- the
+parent goes quiet for the whole subagent run, so following children is
+what keeps the numbers moving while real work happens. When nothing
+advanced between two heartbeats the line says so outright:
+
+```
+[eval-client] busy 245s: msgs 24 | steps 21 | ...  [NO CHANGE since last interval]
+```
+
+That is the signal to investigate. Numbers that keep moving mean a slow
+model, not a stuck client; numbers that stop mean the client is worth
+looking at. Before this existed, a working tier and a wedged client
+printed the same thing -- nothing -- until one of them stopped.
+
+Every heartbeat is also appended to the tier's `status_events`, so the
+timeline survives in `tierN.json` rather than only in the console, and
+the whole console stream is teed to `results/<model>/eval_client.log`.
+
+Two things the counters cannot tell you. Token totals read 0 while a
+message is still in flight and only populate once it completes, so the
+character and step counts are the liveness signal, not the token
+figures. And the elapsed seconds are wall-clock: if the machine
+suspends mid-run, the clock keeps running while the process is frozen,
+so the sleep is counted in a tier's elapsed time. The heartbeat detects
+that case by comparing monotonic against wall-clock time and says so:
+
+```
+[eval-client] busy 16835s: msgs 29 | steps 25 | ...  [HOST SUSPENDED ~14400s of the last 14460s -- elapsed times include it, and any wall-clock timeout may fire on resume]
+```
+
+The timeouts themselves are still wall-clock, so the 300s message
+bound, `OPENCODE_WARMUP_TIMEOUT_S` and the quota threshold can all fire
+on resume for a request that was never actually slow.

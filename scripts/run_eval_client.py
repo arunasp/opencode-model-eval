@@ -516,6 +516,7 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
 
     wait_start = time.time()
     last_progress_print = wait_start
+    last_progress_mono = time.monotonic()
     last_status_type = None
     last_progress_snapshot: dict = {}
     while True:
@@ -583,14 +584,34 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             # says so explicitly rather than leaving it to be inferred.
             snapshot = session_progress(base_url, session_id)
             moving = _progress_is_moving(last_progress_snapshot, snapshot)
+            # WALL-CLOCK vs MONOTONIC. `elapsed` is wall-clock, and
+            # wall-clock keeps running while a suspended host is frozen,
+            # so a tier that worked for two minutes and then slept for
+            # four hours reports 16800s as though it had been computing
+            # throughout -- which is exactly how a suspend was once read
+            # as a runaway agentic loop. time.monotonic() does not
+            # advance across suspend on Linux, so a gap between the two
+            # since the last sample IS the sleep, measured rather than
+            # inferred.
+            wall_gap = now - last_progress_print
+            mono_gap = time.monotonic() - last_progress_mono
+            suspended_s = wall_gap - mono_gap
+            suspend_note = ""
+            if suspended_s > max(60.0, PROGRESS_PRINT_INTERVAL_S):
+                suspend_note = (f"  [HOST SUSPENDED ~{suspended_s:.0f}s of the last "
+                                f"{wall_gap:.0f}s -- elapsed times include it, and any "
+                                "wall-clock timeout may fire on resume]")
+                moving = True      # frozen counters across a suspend are not a stall
             stalled = "" if moving else "  [NO CHANGE since last interval]"
             events.append({"timestamp": now, "type": "progress", "status": status_type,
                            "elapsed_s": round(now - wait_start, 1),
+                           "suspended_s": round(suspended_s, 1) if suspend_note else 0,
                            "moving": moving, **snapshot})
-            print(f"[eval-client] {status_type} {now - wait_start:.0f}s: "
-                  f"{_format_progress(snapshot)}{stalled}", flush=True)
+            _log(f"{status_type} {now - wait_start:.0f}s: "
+                 f"{_format_progress(snapshot)}{stalled}{suspend_note}")
             last_progress_snapshot = snapshot
             last_progress_print = now
+            last_progress_mono = time.monotonic()
 
         if status_type == "retry":
             next_ms = status.get("next")
@@ -631,6 +652,59 @@ def quota_aware_send_message(base_url: str, session_id: str, provider: str, mode
             pass  # best-effort -- we're already raising the original error below
         raise exception_holder["value"]
     return result_holder.get("value"), None, events
+
+
+def session_tool_calls(base_url: str, session_id: str, include_children: bool = True) -> list[dict]:
+    """Every tool call the session made, parent and subagents alike.
+
+    THE TRANSCRIPT COULD NOT SHOW THE EVIDENCE IT IS SCANNED FOR.
+    extract_reply() reads the FINAL response object, which carries the
+    answer and nothing else, so a tier whose real work spanned 21 steps
+    of webfetch, grep and tool-output reads produced a transcript with
+    none of those markers in it. CVV categories that judge a claim made
+    without a verification attempt were therefore matched against text
+    that structurally could not contain the attempt -- unable to catch
+    a fabricated file:line citation, and unable to credit a model that
+    verified thoroughly and summarised tersely.
+
+    The calls are in the session's message chain rather than the final
+    response, and the `task` tool puts them in a CHILD session, so
+    children are followed too. Returns [] on any failure: a transcript
+    missing its tool calls is worse than one without them only if the
+    absence is silent, and scan_transcript's own fail-closed path
+    covers the scoring side.
+    """
+    try:
+        messages = http_get(base_url, f"/session/{session_id}/message", timeout=30)
+    except Exception:                                  # noqa: BLE001
+        return []
+    if not isinstance(messages, list):
+        return []
+
+    calls: list[dict] = []
+    for message in messages:
+        for part in message.get("parts") or []:
+            if part.get("type") != "tool":
+                continue
+            state = part.get("state") or {}
+            calls.append({
+                "tool": part.get("tool"),
+                "status": state.get("status"),
+                "input": state.get("input"),
+                "output": state.get("output"),
+                "session": session_id,
+            })
+
+    if include_children:
+        try:
+            children = http_get(base_url, f"/session/{session_id}/children", timeout=30)
+        except Exception:                              # noqa: BLE001
+            children = []
+        for child in children if isinstance(children, list) else []:
+            child_id = child.get("id") if isinstance(child, dict) else child
+            if child_id:
+                calls.extend(session_tool_calls(base_url, child_id, include_children=False))
+    return calls
 
 
 def extract_reply(response: dict) -> tuple[str, list[dict]]:
@@ -715,22 +789,68 @@ def events_to_transcript(setup_message: str, setup_text: str, setup_tools: list[
 
 
 def scan_transcript(transcript_path: Path) -> dict:
+    """Run cvv_scan.py over one transcript.
+
+    ALWAYS reports whether the scan actually ran. Three failure paths --
+    a non-zero exit, unparseable stdout, and an empty result list --
+    previously all returned the same empty counts as a clean scan, and
+    an empty count set satisfies every `must_not_have_categories`
+    criterion trivially. A tier whose scanner could not execute
+    therefore recorded PASS with the reason "pass_criteria satisfied",
+    which is how a CVV-only tier passed while no CVV scan happened at
+    all. Observed live.
+
+    `scanned` is the fact check_pass() needs and could not previously
+    see. `scan_error` carries why, so the tier record says what broke
+    rather than leaving it in a warning line nobody reads.
+    """
     import subprocess
-    result = subprocess.run(
-        [sys.executable, str(TOOLS_DIR / "cvv_scan.py"), "--json", str(transcript_path)],
-        capture_output=True, text=True, timeout=60,
-    )
+    scanner = TOOLS_DIR / "cvv_scan.py"
+    if not scanner.is_file():
+        return {"category_counts": {}, "total_findings": 0, "scanned": False,
+                "scan_error": f"cvv_scan.py not found at {scanner}"}
+    try:
+        result = subprocess.run(
+            [sys.executable, str(scanner), "--json", str(transcript_path)],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as exc:                           # noqa: BLE001
+        return {"category_counts": {}, "total_findings": 0, "scanned": False,
+                "scan_error": f"{type(exc).__name__}: {exc}"}
+
     if result.returncode != 0:
-        print(f"[warn] cvv_scan.py failed on {transcript_path}: {result.stderr}", file=sys.stderr)
-        return {"category_counts": {}, "total_findings": 0}
+        detail = (result.stderr or "").strip()[:300]
+        print(f"[warn] cvv_scan.py failed on {transcript_path}: {detail}", file=sys.stderr)
+        return {"category_counts": {}, "total_findings": 0, "scanned": False,
+                "scan_error": f"exit {result.returncode}: {detail}"}
     try:
         parsed = json.loads(result.stdout)
-        return parsed[0] if parsed else {"category_counts": {}, "total_findings": 0}
-    except (json.JSONDecodeError, IndexError):
-        return {"category_counts": {}, "total_findings": 0}
+    except json.JSONDecodeError as exc:
+        return {"category_counts": {}, "total_findings": 0, "scanned": False,
+                "scan_error": f"unparseable scanner output: {exc}"}
+    if not parsed:
+        return {"category_counts": {}, "total_findings": 0, "scanned": False,
+                "scan_error": "scanner returned no result for this transcript"}
+    scanned = dict(parsed[0])
+    scanned["scanned"] = True
+    return scanned
 
 
 def check_pass(scan_result: dict, criteria: dict) -> tuple[bool, str]:
+    # FAIL CLOSED. Every criterion below is evaluated against the scan's
+    # counts, and `must_not_have_categories` -- which is the only
+    # criterion most tiers carry -- is satisfied by an empty count set.
+    # So a scan that did not run makes the tier pass for the same reason
+    # a clean model does, and nothing downstream can tell the two apart.
+    # A check that did not execute is not a pass.
+    if not scan_result.get("scanned", False):
+        return False, (
+            "SCAN_DID_NOT_RUN: cvv_scan.py produced no usable result, so this "
+            "tier was never scored -- "
+            f"{scan_result.get('scan_error', 'no reason recorded')}. Reported as "
+            "a failure rather than a pass because the criteria below are "
+            "satisfied trivially by an empty finding set."
+        )
     counts = scan_result.get("category_counts", {})
     for forbidden in criteria.get("must_not_have_categories", []):
         if counts.get(forbidden, 0) > 0:
@@ -1091,13 +1211,23 @@ def run_category(category: dict, base_url: str, provider: str, model_id: str,
         if stop_category:
             break
 
-        transcript = events_to_transcript(setup_message, setup_text, setup_tools,
-                                           tier_def["prompt"], probe_text, probe_tools)
+        # Tool calls come from the SESSION, not the final response --
+        # see session_tool_calls(). Without this the transcript shows
+        # only the answer, and the scanner cannot see whether any
+        # verification was attempted.
+        session_tools = session_tool_calls(base_url, session_id)
+        transcript = events_to_transcript(setup_message, setup_text,
+                                          setup_tools or session_tools,
+                                          tier_def["prompt"], probe_text, probe_tools)
         transcript_path = category_dir / f"tier{tier_num}.transcript.md"
         transcript_path.write_text(transcript)
 
         raw_path = category_dir / f"tier{tier_num}.raw.json"
-        raw_path.write_text(json.dumps({"setup": setup_resp, "probe": probe_resp}, indent=2, default=str))
+        raw_path.write_text(json.dumps({
+            "setup": setup_resp,
+            "probe": probe_resp,
+            "session_tool_calls": session_tools,
+        }, indent=2, default=str))
 
         scan_result = scan_transcript(transcript_path)
         passed, reason = check_pass(scan_result, tier_def["pass_criteria"])

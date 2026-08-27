@@ -6,12 +6,18 @@ via git tags — there's no published package here (unlike
 only version artifact.
 
 - **MAJOR** — breaking change to the environment contract: task-suite
-  prompt format, results JSON schema, required env vars, or the
-  Dockerfile's build-arg interface (`MODEL_PROVIDER`/`MODEL_ID`).
+  prompt format, results JSON schema, or required env vars. The
+  Dockerfile's old `MODEL_PROVIDER`/`MODEL_ID` build-arg interface used
+  to be listed here; it no longer exists, since model selection moved
+  to a runtime request parameter (see CHANGELOG's 0.2.0 entry). The
+  equivalent contract now is `OPENCODE_MODEL_PROVIDER`/
+  `OPENCODE_MODEL_ID` and the server URL, which the env-var clause
+  already covers.
 - **MINOR** — new capability that doesn't break existing usage: a new
-  model added to `docker-compose.yml`/`terraform/variables.tf`, the
+  model reachable through your global opencode config, the
   N-runs/why-chain scoring layer landing on top of the current
-  single-run execution substrate, a new results field that's additive.
+  single-run execution substrate, a new results field that's additive,
+  a new flag on `run_eval_client.py` that defaults to prior behaviour.
 - **PATCH** — bug fixes, doc corrections, dependency/provider version
   bumps with no contract change.
 

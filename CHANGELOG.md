@@ -7,6 +7,104 @@ Tagged versions are created after merging to `main`, per
 
 ## [Unreleased]
 
+### Added
+
+- **`run_eval_client.py` has a command line.** It previously read no
+  argv at all, so `--help` silently executed the entire 25-tier ladder.
+  `--categories` and `--tiers` take ids, 1-based positions or ranges;
+  `--list` prints the ladder without needing a model configured;
+  `--help` behaves. A narrowed run announces itself as PARTIAL in its
+  own log and records `tiers_available`, so a ceiling bounded by the
+  selection cannot later read as a model limit. Against a slow local
+  model this is the difference between an instrument and an all-night
+  job.
+- **Live session progress while a tier runs.** The wait loop printed
+  only on a status transition, and its one heartbeat was gated on
+  status being `retry` -- a long tier sits at `busy`, so a tier doing
+  real work and a client wedged on a dead socket produced identical
+  logs (nothing) until one of them stopped. A 221s tier logged one line
+  and then silence. The heartbeat now fires on any unchanged status and
+  carries what the session has done: messages, steps, tool calls with
+  the last tool and its state, characters of text and reasoning, token
+  totals. It follows subagent child sessions, without which a `task`
+  dispatch looks identical to a stall for its whole duration. When
+  nothing advanced between intervals the line says so. Snapshots are
+  appended to the tier's `status_events`.
+- **`scripts/harness_notebook.py`** -- the interface notebooks use
+  instead of hand-rolling HTTP. `OpencodeSession` (through the server,
+  so tool use and routing behave as in a real eval) and `OllamaModel`
+  (residency, discovery, `/api/show` detail, and direct `/api/chat`
+  including images and thinking control). Wraps `run_eval_client.py`'s
+  own logic rather than restating it, so a notebook inherits its fixes.
+  Model discovery reports both sources and marks Ollama-only entries;
+  selection raises on an ambiguous match rather than picking; the
+  Jupyter picker sets a choice while `resolve()` decides precedence, so
+  a papermill parameter beats the widget and a headless run is not at
+  the mercy of a dropdown default. `ipywidgets` added to the jupyter
+  image for it, with graceful degradation when absent.
+- **`scripts/vision_attachment_probe.py`** -- sends the same generated
+  PNG down both the opencode and native-Ollama paths, so a delivery
+  failure is distinguishable from an encoding rejection or a model that
+  cannot see. See Known Limitations for what it found.
+- **Terraform fails the plan when a container already holds a managed
+  name.** Terraform plans against its own state, so a container Compose
+  created is invisible: the operator approved a clean-looking plan and
+  the apply then died at create time, after building the volume, the
+  network and three images. `data.external.container_conflicts` plus a
+  precondition on `docker_container.server` surfaces it during plan
+  instead, at the existing approval point. Terraform-created containers
+  now carry `managed-by` and `project` labels, so the check can report
+  whether it found a Compose stack, a Terraform leftover whose state was
+  lost, or something unrelated, and tailor the message. Adoption via
+  import is deliberately not offered.
+
+### Fixed
+
+- **A tier whose scoring tool could not run recorded a PASS.**
+  `scan_transcript()` had three failure paths -- non-zero exit,
+  unparseable stdout, empty result list -- all returning the same empty
+  counts as a clean scan, and an empty count set satisfies
+  `must_not_have_categories` trivially. So a CVV-only tier passed while
+  no CVV scan happened, with the reason "pass_criteria satisfied".
+  Observed live. The scanner now reports whether it ran and why not,
+  and `check_pass()` refuses first: a check that did not execute is not
+  a pass. A result dict without the flag also fails, so any path not
+  updated errs toward refusing.
+- **The transcript could not contain the evidence it was scanned for.**
+  Tool calls live in the session's message chain, not the final
+  response, so a tier whose work spanned webfetch, grep and subagent
+  dispatch produced a transcript with none of those markers -- CVV
+  categories judging a claim made without a verification attempt were
+  matched against text that structurally could not show one.
+  `session_tool_calls()` walks the chain and follows child sessions,
+  since the `task` tool puts its work in one. The calls also land in
+  `tierN.raw.json`. The calls are attributed to the setup turn as a
+  group; the chain does not cleanly partition by which prompt triggered
+  which call, and inventing an attribution would be worse.
+- **Elapsed time counted host suspend as compute.** Wall-clock keeps
+  running while a suspended machine is frozen, so a tier that worked
+  two minutes and then slept four hours reported 16835s -- and that
+  reading was taken as a runaway agentic loop when the host had simply
+  been asleep. `time.monotonic()` does not advance across suspend, so
+  the divergence between the two since the last sample measures the
+  sleep. The heartbeat now names it, records `suspended_s`, and does
+  not report the frozen counters as a stall.
+- **`cvv_scan.py` could not fire on a genuine hedge-drop.**
+  `BLANKET_CLOSING_ASSESSMENT` gates on a hedge appearing earlier in
+  the turn, but `HEDGE_WORDS` held eight phrases and contained none of
+  `might`, `not certain`, `unsure`, `possibly`, `seems`. Measured false
+  negative. Extended -- and the limit written into the file: every
+  detector here matches fixed phrases against prose, so every failure
+  is a recall failure and the enumeration cannot be completed. A patch,
+  not a solution.
+- **`TOOLS_DIR` was fixed at `/opt/harness/tools`**, so a container
+  started with `--entrypoint` could not find `cvv_scan.py`, logged a
+  warning, and recorded a PASS on an empty findings set -- a CVV-only
+  tier passing while the CVV scan never ran. `TASK_SUITE_DIR`,
+  `RESULTS_DIR` and `TOOLS_DIR` now fall back to the checkout and are
+  overridable. The path resolution is fixed; the underlying scoring
+  vacuity is not -- see Known Limitations.
+
 ### Changed (BREAKING)
 
 - **Removed this project's own static `provider["local/ollama"]["models"]`
@@ -144,6 +242,35 @@ Tagged versions are created after merging to `main`, per
 
 ### Known Limitations
 
+- **A purely negative pass criterion cannot distinguish a refutation
+  from silence.** The vacuous-pass-on-unrun-scan case is fixed above,
+  but a tier carrying only `must_not_have_categories` is still
+  satisfied by an empty-but-genuine reply exactly as by a good answer.
+  Tiers need something positive to pass on, which is a change to
+  `test_ladder.json` rather than to the client.
+- **`cvv_scan.py` detection remains recall-limited by construction.**
+  The hedge lexicon gap is fixed, but every detector matches fixed
+  phrases against prose, so a violation phrased in unlisted words is
+  invisible and a miss becomes a PASS. Four bugs of this family so far.
+  Closing the class needs a second, non-regex pass -- cheap regex
+  first, a model consulted only where regex found nothing, with the
+  verdict still decided by code.
+- **Image attachments do not reach the model on `local/ollama`.** The
+  v1 API accepts a `FilePartInput` and the server takes it, but the
+  model reports no image support. Same bytes direct to Ollama's
+  `/api/chat` are described correctly. Upstream
+  anomalyco/opencode#20802. Also: opencode passes only text and image
+  media to the model, silently excluding PDF/AVIF/BMP/audio/video, and
+  Ollama's `/v1` accepts only base64 data URLs for
+  jpeg/jpg/png/webp.
+- **Elapsed times are wall-clock, and the suspend case is now
+  reported.** A machine that sleeps mid-run still has the sleep counted
+  in a tier's elapsed seconds, and every wall-clock timeout (the 300s
+  message bound, `OPENCODE_WARMUP_TIMEOUT_S`, the quota threshold) can
+  still fire on resume for a request that was never slow. The
+  heartbeat now detects and names the suspend rather than leaving the
+  inflated figure to be misread, but the timeouts themselves are
+  unchanged.
 - **`scripts/test_run_eval_client_e2e.py` has not been observed
   passing cleanly in every environment tried.** In a network-restricted
   sandbox, `POST /session` hung indefinitely with the mock backend's

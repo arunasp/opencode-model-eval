@@ -197,7 +197,12 @@ class RunCategoryQuotaIntegrationTests(unittest.TestCase):
 
     def test_run_category_regressions_still_pass_after_quota_addition(self):
         rec.create_session = lambda base_url: "fake-session"
-        rec.scan_transcript = lambda p: {"category_counts": {}, "total_findings": 0}
+        # scanned=True because this stub stands in for a scan that RAN
+        # and found nothing. Without it, check_pass fails the tier
+        # closed -- correctly, since an empty finding set from a scan
+        # that never executed is indistinguishable from a clean one.
+        rec.scan_transcript = lambda p: {"category_counts": {}, "total_findings": 0,
+                                         "scanned": True}
 
         responses = []
 

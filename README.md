@@ -91,6 +91,22 @@ diverge from them. See [Known gaps](#known-gaps-not-yet-handled-by-this-harness)
 for the one deliberate asymmetry between them (cloud eval runs are
 outside Terraform's state entirely, on both paths).
 
+**Only one of them can be running at a time.** They create containers
+with the same names and publish the same ports, so the choice is per
+deployment, not per command -- renaming would move the failure from a
+name conflict to a port conflict rather than remove it. Terraform plans
+against its own state and cannot see a container Compose created, so
+`docker_container.server` carries a precondition
+(`scripts/tf-detect-container-conflicts.sh`) that fails the PLAN when
+something already holds a managed name, instead of failing at create
+time after the images are built. Containers Terraform creates are
+labelled `managed-by=terraform` and `project=opencode-model-eval`, so
+the check can say whether it found a Compose stack, a Terraform
+leftover whose state was lost, or something unrelated, and tailor the
+message. Adoption via `terraform import` is deliberately not offered:
+it would leave Compose believing it still owns a container Terraform
+will later destroy.
+
 ## Checks and container lifecycle
 
 `tools/pipeline.sh` holds the staged checks, each also reachable as a
@@ -140,6 +156,41 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
 
 ## Known gaps / not yet handled by this harness
 
+- **A scoring tool that fails to run no longer passes the tier.**
+  Fixed. Tier criteria are `must_not_have_categories`, which an empty
+  findings set satisfies trivially, so a `cvv_scan.py` that could not
+  execute used to produce `findings: {}` and a PASS. The scanner now
+  reports whether it ran, and a tier that was never scored is reported
+  `SCAN_DID_NOT_RUN` with the reason. **What remains:** a tier whose
+  criteria are purely negative still cannot distinguish a correct
+  refutation from silence -- an empty but genuine reply satisfies
+  `must_not_have` exactly as a good answer does. Tiers need something
+  positive to pass on, which is a change to the ladder rather than the
+  client.
+- **The transcript now carries the evidence path.** Fixed. Tool calls
+  live in the session's message chain rather than the final response,
+  so a tier whose work spanned webfetch, grep and subagent dispatch
+  used to produce a transcript with none of those markers -- CVV
+  categories judging a claim made without a verification attempt were
+  matched against text that structurally could not show one. The chain
+  is now walked, child sessions included, and the calls appear in the
+  transcript and in `tierN.raw.json`. **Known imprecision:** the calls
+  are attributed to the setup turn as a group, because the chain does
+  not cleanly partition by which prompt triggered which call.
+- **Image attachments do not reach the model on the `local/ollama`
+  path.** Not fixed -- upstream. The v1 API accepts a `FilePartInput`
+  (`type`, `mime`, `url`)
+  and the server takes it without complaint, but the model answers that
+  it cannot see images. Confirmed by sending the same bytes down both
+  paths with `scripts/vision_attachment_probe.py`: direct to Ollama's
+  native `/api/chat` the model named all three colour bands in order;
+  through an opencode session it reported no image support. This is
+  upstream anomalyco/opencode#20802, which reports exactly this for
+  custom OpenAI-compatible providers. Two further limits apply even
+  where it works: opencode passes only text and image media to the
+  model (PDF, AVIF, BMP, audio and video are accepted by clients and
+  silently excluded), and Ollama's `/v1` surface takes only base64 data
+  URLs for jpeg/jpg/png/webp, refusing http(s) URLs outright.
 - **Agentic/tool-use tasks now have a path, but it isn't wired into the
   test ladder yet.** `server`/`eval`/`discover`/`local-ollama` still
   deny `edit`/`bash` outright (`opencode.base.json`) — fine for pure
