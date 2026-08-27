@@ -176,6 +176,36 @@ case "${mode}" in
     log "starting session reaper in the background (server-side TTL for abruptly-disconnected clients -- opencode has no native equivalent, see scripts/session_reaper.py)"
     python3 /usr/local/bin/session_reaper.py &
 
+    # WARM THE CATALOG BEFORE SERVING, so the first real request does
+    # not pay for it. `models --refresh` calls
+    # ModelsDev.Service.refresh(true) (cli/cmd/models.ts:28-31), which
+    # rewrites the models.dev cache under Global.Path.cache. Without
+    # this, the fetch happens inside the first session's critical path
+    # -- and in a restricted environment it fails slowly (models.dev and
+    # models.opencode.ai both answer 403 from here, measured), which is
+    # exactly the wrong moment to discover that.
+    #
+    # WHAT THIS DOES NOT DO, stated because it is the obvious
+    # assumption: it does not pre-install provider SDK packages. The
+    # install lives in getSDK (provider.ts:1836-1843) and is reached
+    # only by a real request; `models` calls provider.list(), which
+    # enumerates without instantiating. Providers in BUNDLED_PROVIDERS
+    # (provider.ts:113-133, including @ai-sdk/openai-compatible, so all
+    # of local/ollama) never install anything at all.
+    #
+    # NON-FATAL BY DESIGN. A cold or unreachable catalog must not stop
+    # the server from starting: every model this harness runs is
+    # declared in config, and the catalog only supplies metadata.
+    # Timeout-bounded so an egress block cannot hang startup instead.
+    if [ "${OPENCODE_WARM_CATALOG:-true}" = "true" ]; then
+      log "warming the models.dev catalog cache before serving (opencode models --refresh)"
+      if timeout "${OPENCODE_WARM_CATALOG_TIMEOUT_S:-60}" opencode models --refresh >/dev/null 2>&1; then
+        log "catalog cache warmed"
+      else
+        log "catalog warm-up did not complete (rc=$?) -- continuing; models come from config, not the catalog"
+      fi
+    fi
+
     log "starting opencode serve on ${HOSTNAME_BIND}:${PORT}"
     log "HOME resolved to: ${HOME}"
     log "OPENCODE_CONFIG resolved to: ${OPENCODE_CONFIG}"

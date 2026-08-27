@@ -73,6 +73,90 @@ x-harness-defaults: &harness-defaults
   # policy at the host/firewall layer if you want per-model egress scoping.
 
 services:
+  # PROVIDER-REQUEST RECORDER. Runs always, proxies nothing unless the
+  # server is told to use it (OPENCODE_CAPTURE_PROXY in .env) -- an idle
+  # listener costs nothing, while a service behind a profile would not
+  # start under `container_control up`, which appends no arguments by
+  # design.
+  #
+  # WHAT IT IS FOR: opencode assembles the system array and tool
+  # definitions per request and hands them straight to the provider
+  # without persisting them, so the outbound request is the only place
+  # the resolved instruction set exists as bytes. Recording it is the
+  # difference between knowing what a model answered and knowing what it
+  # was asked.
+  #
+  # SCOPE, stated rather than discovered later: a plain-HTTP provider
+  # (local Ollama) is fully visible. An HTTPS provider arrives as
+  # CONNECT and its body stays encrypted end to end -- the record says
+  # so per request rather than a cloud run looking like it made none.
+  capture:
+    image: opencode-model-eval-harness:latest
+    container_name: opencode-model-eval-capture
+    ulimits:
+      nproc: 8192
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: harness
+      args:
+        OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode}
+        OPENCODE_REF: ${OPENCODE_REF:-latest}
+        WORKER_UID: ${HOST_UID:-1000}
+        WORKER_GID: ${HOST_GID:-1000}
+    environment:
+      WORKER_UID: "${HOST_UID:-1000}"
+      WORKER_GID: "${HOST_GID:-1000}"
+    # A PROXY MUST REACH EVERYWHERE ITS CLIENT COULD. Without this the
+    # server resolves host.docker.internal and this container does not,
+    # so every captured request was recorded and then failed to forward
+    # with "Name does not resolve" -- the eval saw a dead provider while
+    # the capture file filled up correctly.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # The script is mounted rather than baked, so a change to it takes
+    # effect on restart instead of on rebuild -- this is diagnostic
+    # tooling, iterated on far more often than the image.
+    # entrypoint.sh dispatches on a MODE name ('serve', 'eval-client',
+    # 'jupyter') and refuses anything else, so it cannot exec a bare
+    # command -- confirmed the hard way: FATAL: unknown mode 'python3'.
+    # Bypassing it costs the uid drop, so `user:` supplies the same
+    # thing directly, exactly as the discover service does. Safe here
+    # because the image bakes a passwd entry for this uid at build time
+    # (WORKER_UID build arg); without that a bare uid has no passwd
+    # record and every exec fails.
+    entrypoint: []
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    command:
+      - "python3"
+      - "/opt/capture/scripts/tools/capture_proxy.py"
+      - "--port"
+      - "8888"
+      - "--output"
+      - "/results/capture/provider-requests.jsonl"
+      # --verbose is deliberately NOT set by default. It prints a line per
+      # captured request to stderr, and a single server start produces
+      # ~190 of them from the provider-package fetch -- enough to bury
+      # the server's own output in `docker compose logs`. The JSONL file
+      # is the record; stderr is only for watching it work. Add
+      # "--verbose" here when debugging the proxy itself.
+    # A LISTENER, not a process that merely started. The server's
+    # entrypoint runs Ollama discovery immediately, and on the first
+    # wiring it raced ahead of this proxy binding -- discovery reported
+    # "Ollama unreachable" and found zero models, which is
+    # indistinguishable from Ollama being switched off. Compose starts
+    # dependencies first, but "started" is not "accepting connections";
+    # only a healthcheck closes that gap.
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import socket,sys; s=socket.create_connection(('127.0.0.1',8888),timeout=2); s.close()"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 2s
+    volumes:
+      - ${HARNESS_ROOT:-.}/scripts:/opt/capture/scripts:ro
+      - ${HARNESS_ROOT:-.}/results:/results
   # Single, static, persistent opencode server. This is the whole point
   # of the redesign: no more per-model image builds -- model selection
   # is a request parameter now (server/routes/instance/httpapi/handlers
@@ -94,6 +178,13 @@ services:
         WORKER_UID: ${HOST_UID:-1000}
         WORKER_GID: ${HOST_GID:-1000}
     command: ["serve"]
+    # Only meaningful when capture is enabled; harmless otherwise, since
+    # an idle proxy still becomes healthy. This exists because the
+    # entrypoint's Ollama discovery runs before opencode starts and
+    # would otherwise race the proxy's bind.
+    depends_on:
+      capture:
+        condition: service_healthy
     # 49605: this is the HOST-published port -- 4096 (container-internal,
     # right side) risked colliding with Axiom's own separate opencode
     # serve instance on the same host. Picked from IANA's dynamic/private
@@ -141,6 +232,54 @@ services:
       OPENCODE_LOCAL_SESSION_TTL_S: "${OPENCODE_LOCAL_SESSION_TTL_S:-600}"
       OPENCODE_SESSION_TTL_S: "${OPENCODE_SESSION_TTL_S:-3600}"
       OPENCODE_REAPER_POLL_INTERVAL_S: "${OPENCODE_REAPER_POLL_INTERVAL_S:-120}"
+      # PROVIDER-REQUEST CAPTURE, off unless asked for. Empty by default,
+      # so nothing sits in the inference path on a normal run: a bug in
+      # a proxy that every request traverses breaks every eval at once,
+      # rather than one check.
+      #
+      # Set OPENCODE_CAPTURE_PROXY=http://capture:8888 in .env and
+      # restart to record what opencode actually SENDS the provider --
+      # the resolved system array and tool definitions, which are
+      # assembled per request in session/prompt.ts and never persisted,
+      # so no endpoint and no message chain can yield them.
+      #
+      # Read by Bun's fetch at the runtime, NOT by opencode's own
+      # vendored getProxyForUrl (that is wired solely into
+      # plugin/openai/ws.ts). Confirmed live: the provider request
+      # arrives at the proxy in absolute-URI form, which only a
+      # proxy-aware client sends. Both spellings, since the lookup is
+      # case-insensitive in some paths and not others.
+      http_proxy: "${OPENCODE_CAPTURE_PROXY:-}"
+      HTTP_PROXY: "${OPENCODE_CAPTURE_PROXY:-}"
+      # https_proxy is REQUIRED SEPARATELY. Measured: with only
+      # http_proxy and all_proxy set, an https:// provider (opencode Zen)
+      # completed normally and produced zero capture records -- Bun did
+      # not fall back to all_proxy for the https scheme. A capture that
+      # silently records nothing for cloud models is exactly the false
+      # signal this harness exists to catch, so both spellings of both
+      # schemes are set explicitly rather than relying on a fallback.
+      https_proxy: "${OPENCODE_CAPTURE_PROXY:-}"
+      HTTPS_PROXY: "${OPENCODE_CAPTURE_PROXY:-}"
+      all_proxy: "${OPENCODE_CAPTURE_PROXY:-}"
+      ALL_PROXY: "${OPENCODE_CAPTURE_PROXY:-}"
+      # THE PROXY SETTING IS NOT SCOPED TO BUN. Every client in this
+      # container reads it, including Python's urllib -- so the
+      # entrypoint's own Ollama discovery and session_reaper.py's
+      # polling of localhost:4096 would both be routed through it.
+      # Confirmed the hard way: with the proxy briefly down, discovery
+      # reported "Ollama unreachable" and found zero models, which looks
+      # exactly like Ollama being off.
+      #
+      # Loopback is excluded because the reaper talks to this same
+      # container and that traffic is neither interesting nor safe to
+      # route through a hop. host.docker.internal is deliberately NOT
+      # excluded: provider traffic is the whole point of capturing.
+      # 0.0.0.0 is in the list because opencode calls ITSELF on it
+      # (observed: GET http://0.0.0.0:4096/session/...?directory=...),
+      # and routing a container's self-talk through a proxy on another
+      # container turns an internal call into a network dependency.
+      no_proxy: "${OPENCODE_CAPTURE_NO_PROXY:-localhost,127.0.0.1,0.0.0.0,::1,server}"
+      NO_PROXY: "${OPENCODE_CAPTURE_NO_PROXY:-localhost,127.0.0.1,0.0.0.0,::1,server}"
     volumes:
       - ${HARNESS_ROOT:-.}/auth-data/auth.json:/home/harness/.local/share/opencode/auth.json:ro
       # Global opencode config -- your own local/ollama provider/model
@@ -159,6 +298,27 @@ services:
       # absolute path than to trust compose's own expansion of `~`.
       - ${OPENCODE_GLOBAL_CONFIG:-}:/home/harness/.config/opencode/opencode.json:ro
       - opencode-log:/home/harness/.local/share/opencode/log
+      # PROVIDER SDK CACHE -- DESIGNED, NOT YET ENABLED. opencode installs
+      # a provider's npm package on first use (Npm.add into
+      # Global.Path.cache, core/src/npm.ts:79) and bun fetches the whole
+      # dependency tree in parallel: measured as a burst of ~190
+      # simultaneous TLS connections to registry.npmjs.org, repeating on
+      # every container recreate because nothing persists that directory.
+      #
+      # A named volume here does NOT work as-is and must not be re-added
+      # without the Dockerfile change: the image has no
+      # /home/harness/.cache directory for the volume to inherit
+      # ownership from, so Docker creates it root-owned and the dropped
+      # uid cannot write to it -- `EACCES: permission denied, mkdir
+      # '/home/harness/.cache/opencode'`, crash-looping the server.
+      # Enable by creating that path in the Dockerfile owned by
+      # WORKER_UID:WORKER_GID first, then mounting:
+      #   - opencode-cache:/home/harness/.cache
+      #
+      # Not every provider pays this cost: @ai-sdk/openai-compatible is in
+      # opencode's BUNDLED_PROVIDERS map (provider.ts:113-133) and loads
+      # with no install at all, so local/ollama never triggers it -- the
+      # burst came from the cloud provider path.
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4096/session', timeout=3)"]
