@@ -54,6 +54,10 @@ SKIP = 2
 # Short enough that a genuinely absent server is reported quickly, long
 # enough that a healthy one answers within it.
 SWEEP_TIMEOUT_S = 5
+# How often to re-sweep while waiting for a server to BIND. Only used
+# when the caller started the stack itself (--require-server); a bind is
+# a cheap check, unlike the readiness wait below it.
+BIND_POLL_INTERVAL_S = 2
 
 
 def log(msg):
@@ -114,39 +118,63 @@ def probe(base_url, timeout):
         return "absent"
 
 
-def wait_for_server(candidates, ready_timeout):
+def wait_for_server(candidates, ready_timeout, expect_server=False):
     """Resolve which server to talk to, waiting for a cold one.
 
-    Two phases, because 'nothing is listening' and 'listening but still
-    bootstrapping' need opposite treatment and a single-shot check
-    cannot tell them apart.
+    Three states, because 'nothing is listening', 'not listening YET'
+    and 'listening but still bootstrapping' need different treatment and
+    a single-shot check cannot tell them apart.
 
-    Phase one is a quick sweep: a refused connection or an unresolvable
-    name is a real answer, so a genuinely absent server is reported in
-    seconds rather than after the full deadline.
+    A quick sweep first: a refused connection or an unresolvable name is
+    a real answer WHEN NOBODY CLAIMS TO HAVE STARTED ONE, so a genuinely
+    absent server is reported in seconds rather than after the full
+    deadline.
 
-    Phase two starts the moment any candidate is merely slow. From then
-    on this waits on ONE long request rather than issuing a new short
-    one every few seconds. A request abandoned at the client is not
-    abandoned at the server -- it goes on creating an instance, and
-    polling it repeatedly stacks more of that work onto a server that is
-    already busy with the last attempt. Waiting is what makes the
-    readiness check stop competing with the readiness it is waiting for.
+    expect_server INVERTS that reading. A caller that has just started
+    the stack knows a server is coming, so a refused connection means
+    NOT BOUND YET, not absent -- the process may still be doing startup
+    work before it binds, and this harness's own entrypoint does exactly
+    that (`opencode models --refresh` runs before `serve`, bounded at
+    60s). Treating refusal as absence there fails the moment the machine
+    is slower or its caches colder than the one the check was written
+    on. Measured: green locally with a warm npm cache, failed on a
+    GitHub runner where the same warm-up had to fetch everything.
+
+    Once any candidate is merely slow, this waits on ONE long request
+    rather than issuing a new short one every few seconds. A request
+    abandoned at the client is not abandoned at the server -- it goes on
+    creating an instance, and polling it repeatedly stacks more of that
+    work onto a server already busy with the last attempt. Waiting is
+    what makes the readiness check stop competing with the readiness it
+    is waiting for.
     """
-    for candidate in candidates:
-        state = probe(candidate, timeout=SWEEP_TIMEOUT_S)
-        if state == "up":
-            return candidate.rstrip("/")
-        if state == "slow":
-            log(f"{candidate} is listening but still coming up -- waiting up to {ready_timeout}s")
-            deadline = time.monotonic() + ready_timeout
-            while time.monotonic() < deadline:
-                remaining = max(1, int(deadline - time.monotonic()))
-                if probe(candidate, timeout=remaining) == "up":
-                    return candidate.rstrip("/")
-            log(f"{candidate} never became ready within {ready_timeout}s")
+    deadline = time.monotonic() + ready_timeout
+    announced = False
+    while True:
+        for candidate in candidates:
+            state = probe(candidate, timeout=SWEEP_TIMEOUT_S)
+            if state == "up":
+                return candidate.rstrip("/")
+            if state == "slow":
+                log(f"{candidate} is listening but still coming up -- "
+                    f"waiting up to {ready_timeout}s")
+                while time.monotonic() < deadline:
+                    remaining = max(1, int(deadline - time.monotonic()))
+                    if probe(candidate, timeout=remaining) == "up":
+                        return candidate.rstrip("/")
+                log(f"{candidate} never became ready within {ready_timeout}s")
+                return ""
+
+        if not expect_server:
             return ""
-    return ""
+        if time.monotonic() >= deadline:
+            log(f"no candidate bound a port within {ready_timeout}s")
+            return ""
+        if not announced:
+            log("nothing listening yet, and a server was started -- "
+                f"waiting up to {ready_timeout}s for it to bind")
+            announced = True
+        time.sleep(BIND_POLL_INTERVAL_S)
 
 
 def resolve_model():
@@ -209,7 +237,8 @@ def main():
     args = parser.parse_args()
 
     candidates = candidate_urls(args.base_url)
-    base_url = wait_for_server(candidates, args.ready_timeout)
+    base_url = wait_for_server(candidates, args.ready_timeout,
+                               expect_server=args.require_server)
     if not base_url:
         log("no opencode serve instance answered on any candidate URL")
         log(f"tried: {', '.join(candidates)}")
