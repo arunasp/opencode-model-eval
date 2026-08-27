@@ -310,7 +310,16 @@ USER root
 ARG WORKER_UID=1000
 ARG WORKER_GID=1000
 
-RUN pip install --break-system-packages --no-cache-dir jupyterlab
+# jupyterlab for the authoring server itself; ipywidgets for the model
+# picker in harness_notebook.py. The picker is optional by design -- the
+# library falls back to environment and the discovery file when
+# ipywidgets is absent, so a notebook still runs where this package is
+# not installed.
+#
+# papermill is deliberately NOT installed yet. The headless execution
+# path it would serve is not built, and an unused dependency in an image
+# is a claim about capability that nothing backs.
+RUN pip install --break-system-packages --no-cache-dir jupyterlab ipywidgets
 
 RUN mkdir -p /notebooks && chown -R "${WORKER_UID}:${WORKER_GID}" /notebooks
 WORKDIR /notebooks
