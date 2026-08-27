@@ -7,6 +7,86 @@ Tagged versions are created after merging to `main`, per
 
 ## [Unreleased]
 
+### Fixed
+
+- **The e2e test had never passed since it was written.** Five weeks of
+  "intermittency" was a test born broken, against two documented but
+  never-tested hypotheses. Measured cause: `opencode serve` accepts TCP
+  connections roughly 1.5s before its route layer can serve, and a
+  request landing in that window is accepted, drained out of the kernel
+  receive buffer, and never answered at all -- so no finite timeout can
+  catch it, which is why widening one never helped. Post 0s after the
+  port opens: blocked past 40s, every time; post 5s: HTTP 200 in ~120ms.
+  Reproduced on 1.18.3 and 1.18.23, so it is not version-specific. The
+  test now requires an answered HTTP request before its timed section
+  begins. `scripts/trace_session_hang.py` is the harness that settled
+  it, and records the result in its own docstring so the matrix is not
+  re-run blind.
+- **A non-conforming provider was scored as a model failure.** A backend
+  that answers a `stream:true` request with non-streaming JSON never
+  reports a finish reason, and opencode consequently cannot end the
+  turn -- one assistant message per provider call, measured at ~15/s.
+  Left alone that ran to a 300s timeout and scored as if the model had
+  failed, while the provider was charged for every call.
+  `_unproductive_loop()` detects it and aborts the tier as a
+  provider-conformance fault. It needs a second predicate because the
+  existing stall check cannot see it: `messages` climbs by hundreds, so
+  the session reads as healthy.
+- **The transcript could not contain the evidence it was scanned for.**
+  Only the final response object was captured, so a tier whose server
+  log showed 21 steps of tool use produced a transcript with none. The
+  whole `/session/{id}/message` chain plus child sessions is now
+  recorded, and the transcript is rebuilt from it -- which also fixes
+  the misattribution in the old assembly, where a setup turn with any
+  tool call of its own discarded the session-wide capture and the scored
+  turn was handed tool calls from the response object, precisely where
+  they do not appear.
+- **`stage_e2e` could not pass in any environment.** Both of its
+  embedded Python blocks had acquired a leading space on every line, and
+  the reachability probe sent the resulting `IndentationError` to
+  `/dev/null`, so the stage reported SKIPPED even on a host with Ollama
+  on `localhost`. Also fixed: `localhost` is the worker rather than the
+  host when this runs under a CI runner -- `scripts/hostnet.py` now owns
+  the candidate chain in one place.
+- **Every e2e run recorded zero tokens.** The mock backend ignored the
+  `stream_options` opencode sends on every request, so no usage chunk
+  was emitted and `Session.getUsage()` fell back to an empty `Usage` --
+  which looked exactly like a correct result. The test now asserts
+  non-zero input and output tokens.
+- **Lint did not check its own driver.** `tools/pipeline.sh` was absent
+  from `shell_files()`, which is how a syntax error survived there.
+
+### Added
+
+- **Provider-request capture** (`scripts/tools/capture_proxy.py`,
+  opt-in). opencode assembles the system array and tool definitions per
+  request and never persists them, so the outbound provider request is
+  the only place the resolved instruction set exists as bytes -- the
+  difference between recording what a model answered and what it was
+  asked. Enabled by setting `OPENCODE_CAPTURE_PROXY`; nothing sits in
+  the inference path otherwise. Parses the request and relays the
+  response byte for byte, so chunked framing and SSE delivery are
+  unaltered. A plain-HTTP provider is fully visible; an HTTPS provider
+  arrives as CONNECT with an opaque body, and each record says so.
+- **Catalog warm-up before `serve`.** `opencode models --refresh` runs
+  in the entrypoint, gated and non-fatal, moving 191 npm connections out
+  of the first request's path.
+
+### Changed
+
+- **The development host's name is scrubbed from tracked files** -- 20
+  occurrences across 8 files, all comments and variable descriptions.
+  The `verify` check that reported them as a standing note is now a hard
+  failure, since the baseline is zero and any hit is a new
+  reintroduction into a public repo. It excludes itself by pathspec:
+  the pattern is the hostname, so the file matched itself and the check
+  could never reach zero.
+- **The e2e test's opencode pin moved 1.18.3 -> 1.18.23**, matching the
+  build the image ships. The old pin verified a response schema for a
+  build nobody ran. Note for anyone bisecting: the flat-JSON behaviour
+  change at 1.18.21 is a deliberate fix, not a regression -- an
+  `unknown` finish no longer ends a turn silently.
+
 ### Added
 
 - **Every pipeline run names the files it wrote.** A tool invocation
@@ -228,7 +308,7 @@ Tagged versions are created after merging to `main`, per
   extends `server`) stages.** Every prior build failure traced back to
   dependencies the `server` role never actually used (spaCy,
   onnxruntime, click, PEP 668, a BuildKit `--chmod` requirement
-  Cyberdyne's Docker doesn't support). `server` now only installs
+  the development host's Docker doesn't support). `server` now only installs
   `ca-certificates` + `python3`.
 - **`auth-data/auth.json` extraction now automatic under Terraform**
   (`data.external.auth_keys`, wrapping `scripts/extract-opencode-key.sh
@@ -252,7 +332,7 @@ Tagged versions are created after merging to `main`, per
   gone. Confirmed via a before/after mock-server check: pre-fix, a
   2-tier run issued 0 abort calls; post-fix, exactly 2.
 - `"eval-client: executable file not found"`, recurring on three
-  independent paths -- root cause was Cyberdyne's Docker using the
+  independent paths -- root cause was the development host's Docker using the
   legacy builder (no working BuildKit/buildx), which didn't always
   propagate an inherited image `ENTRYPOINT` through multi-stage builds.
   Fixed at the source: the `harness` stage now redeclares `ENTRYPOINT`
@@ -308,7 +388,7 @@ Tagged versions are created after merging to `main`, per
   request log staying completely empty -- points at an outbound call
   opencode itself makes during session creation, to a domain outside
   a restricted allowlist. On a machine with full network access
-  (Cyberdyne), one of the two tests in the suite still failed the same
+  (the development host), one of the two tests in the suite still failed the same
   way (`create_session` timing out at the same 20s bound) while the
   other passed -- suggesting something timing-sensitive rather than a
   hard categorical block. Root cause not yet confirmed; a live

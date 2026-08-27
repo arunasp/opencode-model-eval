@@ -22,7 +22,7 @@ resource "docker_volume" "opencode_log" {
 }
 
 # --- auth-data/auth.json precondition -----------------------------------
-# Hit live on Cyberdyne (2026-07-21): every docker_container resource
+# Hit live on the development host (2026-07-21): every docker_container resource
 # below bind-mounts this same host path. Docker's bind-mount behavior
 # for a source path that doesn't exist yet is to silently create an
 # EMPTY DIRECTORY at that path rather than erroring -- so the file
@@ -212,7 +212,7 @@ resource "docker_container" "server" {
   attach   = false
   rm       = false
 
-  # Linux-only (matches Cyberdyne): routes host.docker.internal to the
+  # Linux-only (matches the development host): routes host.docker.internal to the
   # docker host's bridge gateway. See var.opencode_ollama_base_url's
   # description for the 0.0.0.0-bind caveat. Unverified beyond "resolves the
   # networking path correctly on paper" -- no Docker/Ollama access in
@@ -288,7 +288,7 @@ resource "docker_container" "server" {
 # (deepseek-v4-pro, glm-5-2) had no matching provider credential in
 # auth.json at all (confirmed live: only xai/groq/opencode/google/
 # opencode-go/openrouter/huggingface/nvidia/poolside are configured on
-# Cyberdyne) -- a static list just goes stale the moment the account's
+# the development host) -- a static list just goes stale the moment the account's
 # actual provider set changes, the same category of problem
 # discover_local_ollama_models.py already solves for local models by
 # querying live instead of hardcoding. scripts/tf-select-and-run-eval.sh
@@ -351,7 +351,7 @@ resource "docker_container" "discover" {
   volumes {
     volume_name    = docker_volume.opencode_log.name
     container_path = "/home/harness/.local/share/opencode/log"
-    # Hit live on Cyberdyne: this was read_only = true, on the wrong
+    # Hit live on the development host: this was read_only = true, on the wrong
     # assumption (see docker_container.server's comment above) that
     # server is the only writer. `opencode models --verbose` here is a
     # raw CLI invocation, not a request to the server -- the opencode

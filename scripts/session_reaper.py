@@ -74,7 +74,7 @@ server/routes/instance/httpapi/groups/session.ts):
 UNVERIFIED: this has only been run against a mock HTTP server standing
 in for opencode (see verify_session_reaper.py in the same delivery),
 never a real opencode serve instance. The schema is source-confirmed;
-the actual live behavior on Cyberdyne is not.
+the actual live behavior on the development host is not.
 """
 import json
 import os

@@ -35,13 +35,13 @@ variable "container_nproc_limit" {
 }
 
 variable "serve_port" {
-  description = "Host port mapped to the server container's opencode serve port (4096 internal, fixed by this project -- not opencode's own default, which is a random port on 127.0.0.1 only. See entrypoint.sh. Default changed from 4096 to 49604 -- Cyberdyne also runs Axiom's own separate opencode serve instance, and 4096 risked colliding with it. Picked from IANA's dynamic/private port range (49152-65535, RFC 6335); not verified against Axiom's actual chosen port, since that's outside this repo's config. Deliberately DIFFERENT from docker-compose.yml's own default (49605) -- confirmed live that sharing one default meant Compose and Terraform could never both be up at once without a real port-bind collision, even though README's \"Two deployment paths\" section already frames both as legitimately simultaneous."
+  description = "Host port mapped to the server container's opencode serve port (4096 internal, fixed by this project -- not opencode's own default, which is a random port on 127.0.0.1 only. See entrypoint.sh. Default changed from 4096 to 49604 -- the development host also runs Axiom's own separate opencode serve instance, and 4096 risked colliding with it. Picked from IANA's dynamic/private port range (49152-65535, RFC 6335); not verified against Axiom's actual chosen port, since that's outside this repo's config. Deliberately DIFFERENT from docker-compose.yml's own default (49605) -- confirmed live that sharing one default meant Compose and Terraform could never both be up at once without a real port-bind collision, even though README's \"Two deployment paths\" section already frames both as legitimately simultaneous."
   type        = number
   default     = 49604
 }
 
 variable "jupyter_port" {
-  description = "Host port mapped to the jupyter container's Jupyter Lab port (8888 internal, Jupyter's own conventional default -- no collision concern verified against anything else on Cyberdyne, unlike serve_port's 4096-vs-Axiom history)."
+  description = "Host port mapped to the jupyter container's Jupyter Lab port (8888 internal, Jupyter's own conventional default -- no collision concern verified against anything else on the development host, unlike serve_port's 4096-vs-Axiom history)."
   type        = number
   default     = 8888
 }

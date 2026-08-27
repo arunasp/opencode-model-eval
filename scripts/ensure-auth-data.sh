@@ -59,7 +59,7 @@ if [ -d "${AUTH_FILE}" ]; then
   # Two distinct failure modes here, and they need different responses:
   #   - "Permission denied": the Docker daemon runs as root and created
   #     this directory (and often its parent auth-data/ too) as root --
-  #     hit live on Cyberdyne. A non-root user genuinely cannot rmdir
+  #     hit live on the development host. A non-root user genuinely cannot rmdir
   #     it without sudo, no matter how empty it is. Retry with sudo.
   #   - Anything else (e.g. "Directory not empty"): rmdir refusing here
   #     means this ISN'T actually the phantom-mount case -- there's

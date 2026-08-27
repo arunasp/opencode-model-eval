@@ -216,7 +216,7 @@ case "${mode}" in
     # go to a file (~/.local/share/opencode/log/opencode.log) -- the
     # actual error behind an HTTP 500 (e.g. ProviderModelNotFoundError)
     # was invisible in `docker logs` and needed `docker exec ... cat`
-    # to find, live on Cyberdyne. Confirmed via opencode's own CLI docs
+    # to find, live on the development host. Confirmed via opencode's own CLI docs
     # and source (anomalyco/opencode#13158's excerpt shows
     # `print: process.argv.includes("--print-logs")` reads this flag
     # correctly) that this mirrors the same log stream to stderr,

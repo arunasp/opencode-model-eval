@@ -200,7 +200,7 @@ services:
     # docker-compose up`.
     ports:
       - "${OPENCODE_SERVE_PORT:-49605}:4096"
-    # Linux-only (matches Cyberdyne): routes host.docker.internal to the
+    # Linux-only (matches the development host): routes host.docker.internal to the
     # docker host's bridge gateway, since this container is on the
     # default bridge network, not host mode. host-gateway only reaches
     # services bound to 0.0.0.0 -- if Ollama is bound to 127.0.0.1 only
@@ -386,7 +386,7 @@ services:
     depends_on:
       server:
         condition: service_healthy
-    # Linux-only (matches Cyberdyne): routes host.docker.internal to
+    # Linux-only (matches the development host): routes host.docker.internal to
     # the docker host's bridge gateway. Needed for the local/ollama
     # warm-up/unload mechanism's own direct /api/ps polling and unload
     # call in run_eval_client.py -- separate from OPENCODE_SERVER_URL
@@ -403,7 +403,7 @@ services:
       # validated by docker-compose at BUILD time across the WHOLE
       # file, not just this service, which breaks
       # `docker-compose build` (and even `docker-compose build server`
-      # -- confirmed on Cyberdyne with docker-compose v1/legacy, which
+      # -- confirmed on the development host with docker-compose v1/legacy, which
       # validates interpolation file-wide regardless of which service
       # was named). The actual "did you forget to set this" check
       # already exists at the right layer: run_eval_client.py's

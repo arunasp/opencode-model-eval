@@ -361,14 +361,28 @@ stage_verify() {
     log "no host paths or local usernames in tracked files"
   fi
 
-  # A note, not a failure: the development host's name is already in the
-  # published history in a number of files, so failing on it would just
-  # keep the stage red without removing anything. Reported so new ones
-  # are visible as they appear.
+  # NOW A HARD FAILURE, changed 2026-08-27. This was a note rather than a
+  # failure only because the hostname was already in published history
+  # across 8 files, so failing on it would have kept the stage
+  # permanently red without removing anything. Those 20 occurrences are
+  # scrubbed, so the baseline is zero and the check can enforce: any hit
+  # is a NEW reintroduction, in a public repo, and a guard that cannot
+  # change the outcome is worse than none.
   local host_names
-  host_names="$(git grep -clE 'Cyberdyne' -- . 2>/dev/null | wc -l)"
+  # SELF-EXCLUDED, deliberately. The pattern below IS the hostname, so
+  # this file matches itself -- the same self-match class as the
+  # docker-compose call-site grep that flagged its own source, and as
+  # `pkill -f` killing its own shell. Without the pathspec exclusion
+  # this check can never reach zero and stops meaning anything.
+  host_names="$(git grep -clE 'Cyberdyne' -- . ':(exclude)tools/pipeline.sh' 2>/dev/null | wc -l)"
   if [ "$host_names" -gt 0 ]; then
-    log "note: development host name appears in $host_names tracked file(s) (pre-existing, already published)"
+    log "FAIL: development host name reintroduced in $host_names tracked file(s) -- this repo is public"
+    git grep -lE 'Cyberdyne' -- . ':(exclude)tools/pipeline.sh' 2>/dev/null | while read -r f; do
+      log "  $f"
+    done
+    rc=1
+  else
+    log "no development host name in tracked files"
   fi
 
   # Bind sources must not be bare-relative. Compose resolves them against

@@ -46,7 +46,7 @@ USER root
 # jq was in every stage's install list before this split and was
 # NEVER actually invoked by anything running inside any container --
 # only by scripts/extract-opencode-key.sh, a HOST-side script run
-# directly on Cyberdyne before auth.json is even mounted in. Dropped
+# directly on the development host before auth.json is even mounted in. Dropped
 # entirely, not moved to harness -- confirmed via repo-wide grep
 # before removing it, not assumed unused.
 # setpriv: entrypoint.sh drops from root to WORKER_UID/WORKER_GID with
@@ -121,7 +121,7 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY scripts/discover_local_ollama_models.py /usr/local/bin/discover_local_ollama_models.py
 COPY scripts/session_reaper.py /usr/local/bin/session_reaper.py
 COPY config/opencode.base.json /opt/harness/opencode.base.json
-# --chmod on COPY requires BuildKit -- Cyberdyne's Docker (29.1.3) has
+# --chmod on COPY requires BuildKit -- the development host's Docker (29.1.3) has
 # no working buildx component ("BuildKit is enabled but the buildx
 # component is missing or broken"), so the legacy builder is what
 # actually runs here. Explicit RUN chmod instead: portable to both.
@@ -166,13 +166,13 @@ ARG WORKER_UID=1000
 ARG WORKER_GID=1000
 
 # Redeclared explicitly rather than relying on inheritance from
-# `server` -- found live on Cyberdyne that invocations of THIS stage's
+# `server` -- found live on the development host that invocations of THIS stage's
 # image (docker_container.local_ollama via Terraform, a raw `docker
 # run` in scripts/tf-select-and-run-eval.sh, and the same latent gap in
 # docker-compose.yml's eval/local-ollama-defaults) intermittently ran
 # their command ("eval-client") directly instead of through
 # entrypoint.sh, even though the Dockerfile text correctly inherits
-# ENTRYPOINT from `server`. Cyberdyne's Docker uses the legacy builder,
+# ENTRYPOINT from `server`. the development host's Docker uses the legacy builder,
 # not BuildKit (see docker_image.server's own build-arg comment above)
 # -- the legacy builder has a known history of not always correctly
 # propagating inherited image CONFIG metadata (as opposed to layers)
@@ -223,7 +223,7 @@ RUN if command -v apk >/dev/null 2>&1; then \
 # open): spacy/cli/_util.py does `from click import NoSuchOption` but
 # spaCy never lists click as its own dependency, relying on typer to
 # pull it in transitively. typer>=0.26 stopped depending on click, so
-# it silently stopped being installed. Hit live on Cyberdyne:
+# it silently stopped being installed. Hit live on the development host:
 # "ModuleNotFoundError: No module named 'click'" during `spacy
 # download`, after pip reported all 41 packages installed successfully.
 RUN pip install --break-system-packages --no-cache-dir spacy click \
