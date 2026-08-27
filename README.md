@@ -17,9 +17,7 @@ self-correction) rather than just capturing one-off terminal transcripts.
 - [Changelog](CHANGELOG.md) — what's changed, fixed, and still unverified
 - [Contributing](CONTRIBUTING.md)
 - Governance: [`docs/CODEGEN.md`](docs/CODEGEN.md), [`docs/BRANCHING.md`](docs/BRANCHING.md),
-  [`docs/VERSIONING.md`](docs/VERSIONING.md) — same conventions as
-  `opencode-plugin-ctx-squid`, scoped down to what this repo actually
-  contains rather than copied wholesale
+  [`docs/VERSIONING.md`](docs/VERSIONING.md)
 
 ## Quick start
 
@@ -69,8 +67,8 @@ reasoning.
 
 ## Two deployment paths
 
-Terraform and Docker Compose are both fully supported, maintained in
-parallel on purpose — neither is deprecated or the "real" one.
+Terraform and Docker Compose are both supported and maintained in
+parallel. Neither is deprecated, and neither is the primary.
 `harness-control.sh` asks "Which backend?" before every action (Deploy/
 Remove harness, Run an eval, Jupyter start/stop) and drives the
 equivalent command on whichever you pick:
@@ -87,7 +85,7 @@ credential extraction on `plan`/`apply` (see INSTALL.md). Pick Compose
 for a simpler, more direct path with no separate state file to manage.
 Both build from the same `Dockerfile` and share `docker-compose.yml`'s
 service definitions where Terraform's own resources don't need to
-diverge from them. See [Known gaps](#known-gaps-not-yet-handled-by-this-harness)
+diverge from them. See [Known gaps](#known-gaps)
 for the one deliberate asymmetry between them (cloud eval runs are
 outside Terraform's state entirely, on both paths).
 
@@ -123,12 +121,13 @@ machine, in a sandbox, and in a CI worker carrying different toolchains.
 | `make client` | opens one session against a running server, sends `hi`, closes it, and writes the outcome to `results/e2e-session/`; skips when nothing answers |
 | `make containers` | builds the image, starts the server, waits for it to answer, runs the client probe, then stops it again |
 | `make exec-bits` | restores executable bits recorded in the index |
-| `make ci` | lint, test, verify, e2e and client |
+| `make ci` | lint, prose, test, verify, e2e and client |
+| `make prose` | filler-word ratchet over the docs |
 
-`containers` is not part of `ci`: it starts and stops real containers,
-which is an action to ask for rather than a side effect of running
-checks. It also leaves a stack it did not start running, so probing a
-server you already have up does not tear it down underneath you.
+`containers` is not part of `ci`: it starts and stops containers, which
+is an action to ask for rather than a side effect of running checks. It
+also leaves a stack it did not start running, so probing a server you
+already have up does not tear it down underneath you.
 
 ### What a run tells you it wrote
 
@@ -160,19 +159,19 @@ Compose directly, which is why a bare `up` starts only `server` (see
 
 - `training_precedence_resistance`, `verification_depth_disclosure`,
   `self_correction_discipline` — tier 1-2 content seeded from prompts
-  actually validated against Hy3 in a prior session.
+  validated against Hy3 in a prior session.
 - `fact_fabrication_resistance`, `reasoning`, `instruction_following`,
   `coding`, `failure_diagnostics_and_fixing`, `handling_contradictions`
   — new design, **unvalidated**. Every tier follows the same
   escalating-difficulty pattern but hasn't been run against any model
-  yet. Expect wording calibration after first real runs.
+  yet. Expect wording calibration after the first runs against a model.
 
 Escalation rule: run tier 1, escalate on pass, stop on first fail.
 A category's ceiling is reported even on a tier-1 fail (ceiling = 0).
 
 See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
 
-## Known gaps / not yet handled by this harness
+## Known gaps
 
 - **A scoring tool that fails to run no longer passes the tier.**
   Fixed. Tier criteria are `must_not_have_categories`, which an empty
@@ -181,7 +180,7 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
   reports whether it ran, and a tier that was never scored is reported
   `SCAN_DID_NOT_RUN` with the reason. **What remains:** a tier whose
   criteria are purely negative still cannot distinguish a correct
-  refutation from silence -- an empty but genuine reply satisfies
+  refutation from silence -- an empty reply satisfies
   `must_not_have` exactly as a good answer does. Tiers need something
   positive to pass on, which is a change to the ladder rather than the
   client.
@@ -215,13 +214,12 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
   reasoning/knowledge tasks. The `git-workspace` role
   (`config/opencode.git-workspace.json`, `bash: allow`/`edit: allow`,
   made safe by mounting nothing but read-only `auth.json` rather than
-  by narrowing the command set) is a real, isolated place to run
+  by narrowing the command set) is an isolated place to run
   agentic/coding tasks, but it's a standalone one-shot container
   (`make git-workspace` / `make tf-git-workspace`),
   not a `test_ladder.json` category yet — `coding`,
   `instruction_following`, and `failure_diagnostics_and_fixing` tiers
-  still can't actually exercise real tool use through the structured
-  run.
+  still cannot exercise tool use through the structured run.
 - **`extract_reply()`'s tool-call part shape is still an inference** —
   see CHANGELOG.md.
 - **`manual_check` tiers require a human or a separate test run** —
@@ -232,10 +230,12 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
 - **Embedding model fetch needs GitHub reachable at build time** — see
   REQUIREMENTS.md.
 - **Compose's `eval` service's `depends_on` only waits for the server
-  container to start, not for it to actually be listening** —
+  container to start, not for it to be listening** —
   `entrypoint.sh`'s `eval-client` mode polls the server before running
   to cover this gap; if the server takes unusually long to come up,
   the 30-attempt/2-second poll (60s total) may need lengthening.
+  Related and measured: an open port is not a ready server either — see
+  `scripts/test_run_eval_client_e2e.py`'s `_wait_until_serving()`.
 - **Cloud eval runs are deliberately outside Terraform's state
   entirely.** Terraform provisions the shared infra (server, network,
   volumes, image, `docker_container.discover`, local Ollama containers)
@@ -246,9 +246,9 @@ See [INSTALL.md](INSTALL.md#results) for how to read `report.json`.
   hardcoded cloud model; that matrix covered exactly 3 entries, all 3
   broken or uncredentialed in practice, so a fixed list was actively
   worse than not tracking it at all. `terraform plan`/`terraform show`
-  will never tell you whether a cloud eval container is currently
-  running — that's a deliberate trade-off, not a bug, and the same one
-  Compose's own `eval` service already made.
+  will never tell you whether a cloud eval container is running —
+  that's a trade-off, not a bug, and the same one Compose's own `eval`
+  service already made.
 
 See [CHANGELOG.md](CHANGELOG.md) for what's already been fixed and
 what's still unverified in detail.

@@ -90,6 +90,7 @@ run_stage() {
   log "=== stage: $name ==="
   case "$name" in
     lint) stage_lint ;;
+    prose) stage_prose ;;
     test) stage_test ;;
     build) stage_build ;;
     verify) stage_verify ;;
@@ -97,7 +98,14 @@ run_stage() {
     client) stage_client ;;
     containers) stage_containers ;;
     exec-bits) restore_exec_bits ;;
-    *) log "unknown stage: $name"; return 1 ;;
+    # An unknown stage records a FAILURE rather than returning early.
+    # Returning 1 here skipped the bookkeeping below, so the stage never
+    # reached FAILED_STAGES and the run still ended RESULT: ALL PASS --
+    # a stage that could not run reporting success, which is the exact
+    # shape this project exists to catch. Found by adding `prose` to
+    # three of the four places a stage name is listed and missing this
+    # one.
+    *) log "unknown stage: $name"; FAILED_STAGES="$FAILED_STAGES $name"; return 1 ;;
   esac
   rc=$?
   case "$rc" in
@@ -128,6 +136,21 @@ shell_files() {
     scripts/test_ollama_model_switch.sh \
     scripts/test_compose_detection.sh \
     tools/pipeline.sh
+}
+
+stage_prose() {
+  local rc=0
+  # Filler-word ratchet over prose. Word list follows the Google
+  # developer documentation style guide, CircleCI's docs style guide and
+  # the OpenStack writing guidelines -- sources cited in the script.
+  # Files carrying pre-existing hits are listed in its BASELINE and may
+  # only improve; anything else must be clean.
+  local docs=(README.md INSTALL.md REQUIREMENTS.md CHANGELOG.md
+              CONTRIBUTING.md .env.example docs/*.md)
+  if ! python3 scripts/tools/prose_check.py --baseline "${docs[@]}"; then
+    rc=1
+  fi
+  return "$rc"
 }
 
 stage_lint() {
@@ -641,14 +664,16 @@ stage_containers() {
 
 usage() {
   cat <<USAGE
-usage: tools/pipeline.sh [lint|test|build|verify|e2e|client|containers|exec-bits|all]
+usage: tools/pipeline.sh [lint|prose|test|build|verify|e2e|client|containers|exec-bits|all]
 
-  all         lint, test, verify, e2e, client
+  all         lint, prose, test, verify, e2e, client
   build       build every image this project registers
   client      one "hi" session against an already-running server
   containers  build, start, probe and stop the stack (needs docker)
   exec-bits   restore executable bits the Filesystem connector drops
               (also runs automatically before any other stage)
+  prose       filler-word ratchet over the docs; baselined files may
+              only improve, everything else must be clean
 USAGE
 }
 
@@ -715,6 +740,7 @@ main() {
 
   case "$target" in
     lint) run_stage lint ;;
+    prose) run_stage prose ;;
     test) run_stage test ;;
     build) run_stage build ;;
     verify) run_stage verify ;;
@@ -724,6 +750,7 @@ main() {
     exec-bits) run_stage exec-bits ;;
     all)
       run_stage lint
+      run_stage prose
       run_stage test
       run_stage verify
       run_stage e2e

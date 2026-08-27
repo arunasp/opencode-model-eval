@@ -9,9 +9,13 @@ Reads a task() output transcript and grades CVV adherence:
 - Check-before-narrate violations
 
 Usage:
-    python3 tools/memory/axiom_cvv_verify.py check --input <path>        (transcript file)
-    python3 tools/memory/axiom_cvv_verify.py check --text "<text>"       (inline text)
-    python3 tools/memory/axiom_cvv_verify.py check --text "<text>" --json
+    python3 scripts/tools/axiom_cvv_verify.py check --input <path>   (transcript file)
+    python3 scripts/tools/axiom_cvv_verify.py check --text "<text>"  (inline text)
+    python3 scripts/tools/axiom_cvv_verify.py check --text "<text>" --json
+
+(The usage lines above previously read `tools/memory/...`, a path from
+where this file originated that does not exist in this repository --
+anyone following them got "No such file or directory".)
 
 Grades: PASS (no violations), PARTIAL (some violations), FAIL (severe violations)
 Gate action: if FAIL, gate enters read_only state.

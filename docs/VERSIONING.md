@@ -1,58 +1,37 @@
-# VERSIONING.md
+# Versioning
 
 Semantic versioning (`MAJOR.MINOR.PATCH`) applied to the repo as a whole
-via git tags — there's no published package here (unlike
-`opencode-plugin-ctx-squid`, which ships an npm package), so tags are the
-only version artifact.
+via git tags. No package is published, so tags are the only version
+artifact.
 
-- **MAJOR** — breaking change to the environment contract: task-suite
-  prompt format, results JSON schema, or required env vars. The
-  Dockerfile's old `MODEL_PROVIDER`/`MODEL_ID` build-arg interface used
-  to be listed here; it no longer exists, since model selection moved
-  to a runtime request parameter (see CHANGELOG's 0.2.0 entry). The
-  equivalent contract now is `OPENCODE_MODEL_PROVIDER`/
-  `OPENCODE_MODEL_ID` and the server URL, which the env-var clause
-  already covers.
-- **MINOR** — new capability that doesn't break existing usage: a new
-  model reachable through your global opencode config, the
-  N-runs/why-chain scoring layer landing on top of the current
-  single-run execution substrate, a new results field that's additive,
-  a new flag on `run_eval_client.py` that defaults to prior behaviour.
-- **PATCH** — bug fixes, doc corrections, dependency/provider version
-  bumps with no contract change.
+| Bump | Applies to |
+|---|---|
+| **MAJOR** | Breaking change to the environment contract: task-suite prompt format, results JSON schema, or required env vars — as of `v1.0.0`, `OPENCODE_MODEL_PROVIDER`, `OPENCODE_MODEL_ID` and the server URL |
+| **MINOR** | Additive capability: a new model reachable through the global opencode config, a new results field, a new flag defaulting to prior behaviour |
+| **PATCH** | Bug fixes, doc corrections, dependency or provider version bumps with no contract change |
 
-## What gets tagged
+The Dockerfile's `MODEL_PROVIDER` / `MODEL_ID` build args were once a
+MAJOR-level contract. They no longer exist — model selection is a
+runtime request parameter as of `v0.2.0`.
 
-Tag `main` at the commit where a version boundary is reached. Patch sets
-delivered per `BRANCHING.md`'s convention are named for the version they
-deliver **to** (`opencode-model-eval-patch-0.2.0.tar.gz` lands you at
-`v0.2.0`), so the tag should exist at the commit that patch set produces.
+## Tagging
 
-## Current state
+Tag `main` at the commit reaching a version boundary. Patch sets named
+per `docs/BRANCHING.md` are named for the version they deliver **to**:
+`opencode-model-eval-patch-0.2.0.tar.gz` lands at `v0.2.0`, so the tag
+belongs on the commit that patch set produces.
 
-`v0.1.0` was planned early on to mean a minimal checkpoint (immutable
-base + shared harness + per-model execution paths + scoped auth
-extraction + governance docs, no test suite content yet), but it was
-never actually tagged at that point — the repo kept moving and the tag
-kept getting deferred. Rather than tag the eventual first checkpoint
-`v0.1.0` retroactively (which would have meant claiming a "minimal
-checkpoint" tag for a state that already includes a full 9-category/
-25-tier test ladder, quota handling, and several other features well
-beyond that original scope), the actual first tag applies a MINOR bump
-instead: `v0.1.0` stands as the implicit, never-tagged baseline this
-batch's own new capabilities (the server-side session TTL reaper,
-static example notebooks, `REQUIREMENTS.md` + `scripts/check-
-requirements.sh`) are genuinely additive on top of, which is what a
-MINOR bump means per this file's own rule above. `v0.2.0` is the real
-first tag.
+## Tags
 
-`v0.2.0` covers: the shared harness image, both Terraform and Compose
-deployment paths, scoped auth extraction (now automatic under
-Terraform), the full test ladder, quota/rate-limit handling, per-run
-server log capture, the `git-workspace` and `jupyter` roles, the
-session TTL reaper, static example notebooks, and the split
-`README.md`/`INSTALL.md`/`CHANGELOG.md`/`REQUIREMENTS.md`
-documentation. See `CHANGELOG.md` for the itemized history. Not part
-of this tag: agentic/tool-use tasks wired into the test ladder itself,
-cost/latency capture, N-runs/why-chain scoring — see README's "Known
-gaps" section. Those remain `v0.2.0`-or-later territory.
+| Tag | Date | Contents |
+|---|---|---|
+| `v0.2.0` | 2026-07-25 | Shared harness image; Terraform and Compose deployment paths; scoped auth extraction, automatic under Terraform; the full test ladder; quota and rate-limit handling; per-run server log capture; `git-workspace` and `jupyter` roles; session TTL reaper; static example notebooks; split `README.md` / `INSTALL.md` / `CHANGELOG.md` / `REQUIREMENTS.md` |
+| `v1.0.0` | 2026-07-27 | Breaking: `local/ollama` models come from the global opencode config rather than a static project list. Requires `OPENCODE_GLOBAL_CONFIG` |
+
+`v0.1.0` was planned as a minimal checkpoint and never tagged; the repo
+had moved well past that scope by the time a tag was cut. It stands as
+the implicit baseline `v0.2.0` is additive on top of.
+
+Not covered by any tag to date: agentic and tool-use tasks wired into
+the ladder, cost and latency capture, N-runs and why-chain scoring. See
+README's "Known gaps".

@@ -1,66 +1,49 @@
-# BRANCHING.md
+# Branching
 
-`main` plus short-lived topic branches. Deliberately not GitFlow, not a
-PR-review-gated model for the maintainer's own changes — this workflow
-is sized for one contributor plus one assistant, not a team, same
-rationale as `opencode-plugin-ctx-squid`'s `BRANCHING.md`.
+`main` plus short-lived topic branches. Not GitFlow, and no PR review
+for the maintainer's own changes: the workflow is sized for one
+contributor and one assistant.
 
-This describes the maintainer's own fast path. **External
-contributions go through a real, reviewed pull request instead** — see
-[CONTRIBUTING.md](../CONTRIBUTING.md). The two aren't in tension: one
-person moving fast on their own repo and requiring review from
-everyone else are the normal, expected shape of an open-source project
-with a single maintainer, not a contradiction to resolve.
+External contributions go through a reviewed pull request. See
+[CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Branch naming
 
 `<type>/<short-description>`, where `<type>` is one of:
 
-- `feat/` — new capability (e.g. `feat/why-chain-scoring`)
-- `fix/` — bug fix
-- `docs/` — documentation only
-- `chore/` — tooling, CI, dependency bumps, no behavior change
+| Prefix | For |
+|---|---|
+| `feat/` | New capability, e.g. `feat/why-chain-scoring` |
+| `fix/` | Bug fix |
+| `docs/` | Documentation only |
+| `chore/` | Tooling, CI, dependency bumps; no behaviour change |
 
 ## Workflow
 
-1. Branch off a freshly-fetched `origin/main` — never a stale local
-   `main`, and never a hardcoded commit SHA (a hardcoded base goes stale
-   the moment `origin` moves; this has caused a real failure before).
+1. Branch off a freshly fetched `origin/main`. Never a stale local
+   `main`, and never a hardcoded commit SHA — a hardcoded base goes
+   stale as soon as `origin` moves, which has broken a patch set here
+   before.
 2. Apply changes on the topic branch.
-3. Run the actual verification for the change — `shellcheck` for bash,
-   the HCL2 parser (or `terraform validate` if you have the binary) for
-   Terraform, a real `docker compose build` / `terraform plan` if you
-   have Docker available — not just a syntax check standing in for a
-   real test.
-4. Fast-forward-merge into `main` only if verification passes.
-   `--ff-only` is the actual safety check here, not a formality — if it's
-   not a fast-forward, `main` moved underneath you and the branch needs
-   rebasing first, not a forced merge.
-5. Delete the topic branch with `git branch -D`, not `-d` — `-d` refuses
-   to delete a branch whose upstream hasn't been pushed yet, which is
-   the normal case for a short-lived local topic branch, not an error
-   condition to work around.
+3. Verify what you changed: `shellcheck` for bash, the HCL2 parser or
+   `terraform validate` for Terraform, `docker compose build` or
+   `terraform plan` where a daemon is available. A syntax check does not
+   stand in for running the thing.
+4. Merge with `--ff-only`. The flag is the check: a merge that is not a
+   fast-forward means `main` moved underneath you, and the branch needs
+   rebasing rather than a forced merge.
+5. Delete the topic branch with `git branch -D`. `-d` refuses to delete
+   a branch whose upstream was never pushed, which is the normal state
+   of a short-lived local branch.
 
-## Versioning
+`make ci` runs lint, prose, test, verify, e2e and client. Stages skip
+rather than fail when a dependency is absent, and name the reason.
 
-Semantic versioning (`vMAJOR.MINOR.PATCH`), starting at `v0.1.0` —
-pre-1.0 while the CLI/menu surface (harness-control.sh) is still
-changing shape often enough that "breaking" isn't yet a meaningful
-distinction from "the normal rate of change."
+## Tagging
 
-- **PATCH**: bug fixes only, no new capability, no behavior change
-  beyond "the thing now works as originally intended."
-- **MINOR**: new capability (a new menu entry, a new script flag, a
-  new deployment resource) that doesn't remove or change the meaning
-  of anything existing.
-- **MAJOR**: reserved for `v1.0.0` onward, once the CLI/menu surface
-  is stable enough that a genuine breaking change (removing a flag,
-  changing a menu's meaning, changing an on-disk format) is a real,
-  distinguishable event rather than routine iteration.
-
-Tag **after** merging to `main`, not before — a tag on an unmerged
-branch tip is a tag on a commit `main` may never actually reach if
-that branch gets rebased or abandoned instead.
+Version rules live in [VERSIONING.md](VERSIONING.md). Tag **after**
+merging to `main`: a tag on an unmerged branch tip names a commit
+`main` may never reach if that branch is rebased or abandoned.
 
 ```bash
 git checkout main && git pull
@@ -68,26 +51,28 @@ git tag -a vX.Y.Z -m "<one-line summary of what this checkpoint adds>"
 git push origin vX.Y.Z
 ```
 
-Not every merge needs a tag — routine fixes can ride along until the
-next tagged version without their own checkpoint. Tag when a batch of
-changes reaches a state worth being able to reference or roll back to
-by name, which in practice has been roughly every few merged bundles
-so far.
+Not every merge needs a tag. Tag when a batch reaches a state worth
+referencing or rolling back to by name.
+
+## History rewrites
+
+Squashing or rebasing unpushed commits is fine; anything already on
+`origin` is not. Before a rewrite:
+
+1. Tag the current tip — `git tag backup/pre-<reason>-<date>` — so the
+   pre-rewrite chain survives a bad rebase.
+2. Check for refs pointing into the range being rewritten
+   (`git for-each-ref` against `git rev-list origin/main..main`). A
+   branch left pointing at a rewritten commit sits on an orphaned chain.
+3. Compare `HEAD^{tree}` before and after. A squash must not change
+   content; if the trees differ, do not move `main`.
 
 ## Delivery convention
 
-For changes after the first commit: `git format-patch` sets, not a full
-repo re-dump. Naming: `<project>-patch-x.y.z.tar.gz`, where `x.y.z` is
-the version the patch set delivers **to** (the resulting tag), not the
-version patched from. Include a standalone `apply-patches.sh` alongside
-the `.patch` files — outside the git repo, never committed — that:
-aborts any stuck `git am` session, fetches `origin` fresh, branches off
-the freshly-fetched `origin/main`, applies patches there, runs
-verification on that branch, and only fast-forward-merges into `main` if
-it passes.
+Superseded. Changes land as commits on this worktree, verified in the
+same place. The `git format-patch` sets and `apply-patches.sh` bundles
+described in earlier revisions of this file are retired.
 
-Full tarballs remain correct for: the repo's first commit (nothing to
-diff against yet — this repo's initial state), after a rebase/history
-rewrite (old commit hashes the patches were generated against no longer
-exist), or when patches fail to apply cleanly and reconciling costs more
-than resyncing from a snapshot.
+Full tarballs remain correct for a first commit, after a history
+rewrite that invalidates the hashes patches were generated against, or
+when reconciling a failed patch application costs more than resyncing.

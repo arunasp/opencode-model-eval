@@ -1,52 +1,47 @@
 # Contributing
 
-This repo's day-to-day workflow (`docs/BRANCHING.md`) is a fast, direct
-solo path — the maintainer commits straight to `main` for their own
-changes, no PR review required. If you're contributing from outside,
-you go through a normal pull request instead. Both are the expected
-shape of this project; neither is a workaround for the other.
+The maintainer commits directly to `main`; outside contributions go
+through a pull request. See `docs/BRANCHING.md` for branch naming.
 
 ## Before you start
 
-For anything more than a trivial fix, open an issue first (there are
-bug report and feature request templates) — it's a much shorter
-conversation before code gets written than after.
+Open an issue before writing code for anything beyond a trivial fix.
+Bug report and feature request templates are provided.
 
 ## Making a change
 
-1. Fork the repo, branch off a freshly-fetched `main`.
-2. Name the branch `feat/`, `fix/`, `docs/`, or `chore/` followed by a
-   short description — see `docs/BRANCHING.md` for what each prefix
-   means.
-3. Make the change. Keep it focused — a PR that does one thing is much
-   faster to review than one that does three.
-4. Verify it for real, matching what you touched:
-   - Bash: `shellcheck` on anything you changed
-   - Terraform: `terraform validate` (or the HCL2 parser if you don't
-     have the terraform binary handy)
-   - Docker: an actual `docker compose build` / `docker build`
-   - Anything behavior-visible (harness-control.sh, the pickers, the
-     eval flow): describe what you ran and what you saw — a syntax
-     check isn't a substitute for actually trying the thing
-5. Open the PR against `main`. The template will prompt for the above.
+1. Fork, branch off a freshly fetched `main`.
+2. Prefix the branch `feat/`, `fix/`, `docs/` or `chore/` — see
+   `docs/BRANCHING.md`.
+3. Keep the change focused. One PR, one concern.
+4. Verify what you touched:
+   - Bash — `shellcheck`
+   - Terraform — `terraform validate`, or the HCL2 parser if the binary
+     is unavailable
+   - Docker — `docker compose build` / `docker build`
+   - Behaviour-visible changes (`harness-control.sh`, the pickers, the
+     eval flow) — state what you ran and what you observed. A syntax
+     check is not a substitute.
+5. Open the PR against `main`.
 
-## Scope of this repo
+`make ci` runs lint, test, verify, e2e and client. Stages skip rather
+than fail when a dependency is absent, and report the reason.
 
-This is an LLM eval harness, not a general-purpose Ollama/opencode
-wrapper — changes should serve the eval/scoring workflow (Terraform +
-Docker Compose deployment, the CVV scoring layer, the model discovery
-and picker UI) rather than add unrelated functionality.
+## Scope
 
-## A note on scale
+An LLM eval harness. Changes should serve the eval and scoring workflow
+— Terraform and Compose deployment, the CVV scoring layer, model
+discovery and the picker UI. Not a general-purpose Ollama or opencode
+wrapper.
 
-This project is maintained by one person (plus AI-assisted
-development — you'll see that in the commit history, and that's
-intentional, not something to work around). Response times on issues
-and PRs will reflect that; it's not a signal about how welcome a
-contribution is.
+## Maintenance
+
+Maintained by one person, with AI-assisted development visible in the
+commit history. Response times reflect that.
 
 ## Private data
 
-This repo is public. Never commit hostnames, local usernames, absolute
-host filesystem paths, or credentials — scrub them from anything
-before it goes in a commit, including log excerpts attached to issues.
+This repo is public. Do not commit hostnames, local usernames, absolute
+host paths or credentials, including in log excerpts attached to issues.
+`make verify` fails on host paths, usernames and the development host
+name; it does not catch everything.

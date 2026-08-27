@@ -9,83 +9,64 @@ Tagged versions are created after merging to `main`, per
 
 ### Fixed
 
-- **The e2e test had never passed since it was written.** Five weeks of
-  "intermittency" was a test born broken, against two documented but
-  never-tested hypotheses. Measured cause: `opencode serve` accepts TCP
-  connections roughly 1.5s before its route layer can serve, and a
-  request landing in that window is accepted, drained out of the kernel
-  receive buffer, and never answered at all -- so no finite timeout can
-  catch it, which is why widening one never helped. Post 0s after the
-  port opens: blocked past 40s, every time; post 5s: HTTP 200 in ~120ms.
-  Reproduced on 1.18.3 and 1.18.23, so it is not version-specific. The
-  test now requires an answered HTTP request before its timed section
-  begins. `scripts/trace_session_hang.py` is the harness that settled
-  it, and records the result in its own docstring so the matrix is not
-  re-run blind.
-- **A non-conforming provider was scored as a model failure.** A backend
-  that answers a `stream:true` request with non-streaming JSON never
-  reports a finish reason, and opencode consequently cannot end the
-  turn -- one assistant message per provider call, measured at ~15/s.
-  Left alone that ran to a 300s timeout and scored as if the model had
-  failed, while the provider was charged for every call.
-  `_unproductive_loop()` detects it and aborts the tier as a
-  provider-conformance fault. It needs a second predicate because the
-  existing stall check cannot see it: `messages` climbs by hundreds, so
-  the session reads as healthy.
-- **The transcript could not contain the evidence it was scanned for.**
-  Only the final response object was captured, so a tier whose server
-  log showed 21 steps of tool use produced a transcript with none. The
-  whole `/session/{id}/message` chain plus child sessions is now
-  recorded, and the transcript is rebuilt from it -- which also fixes
-  the misattribution in the old assembly, where a setup turn with any
-  tool call of its own discarded the session-wide capture and the scored
-  turn was handed tool calls from the response object, precisely where
-  they do not appear.
-- **`stage_e2e` could not pass in any environment.** Both of its
-  embedded Python blocks had acquired a leading space on every line, and
-  the reachability probe sent the resulting `IndentationError` to
-  `/dev/null`, so the stage reported SKIPPED even on a host with Ollama
-  on `localhost`. Also fixed: `localhost` is the worker rather than the
-  host when this runs under a CI runner -- `scripts/hostnet.py` now owns
-  the candidate chain in one place.
-- **Every e2e run recorded zero tokens.** The mock backend ignored the
-  `stream_options` opencode sends on every request, so no usage chunk
-  was emitted and `Session.getUsage()` fell back to an empty `Usage` --
-  which looked exactly like a correct result. The test now asserts
-  non-zero input and output tokens.
-- **Lint did not check its own driver.** `tools/pipeline.sh` was absent
-  from `shell_files()`, which is how a syntax error survived there.
+- `test_run_eval_client_e2e.py` waits for an answered HTTP request
+  rather than an open port. `opencode serve` accepts connections ~1.5s
+  before its route layer serves; a request in that window is received,
+  drained from the socket buffer, and never answered, so no finite
+  timeout catches it. Post at 0s blocks past 40s; post at 5s returns 200
+  in ~120ms. Reproduces on 1.18.3 and 1.18.23.
+- `run_eval_client.py` aborts a tier when the provider cannot end a
+  turn. A backend answering `stream:true` with non-streaming JSON
+  reports no finish reason, so opencode keeps prompting at ~15 calls/s
+  until the tier times out. `_unproductive_loop()` is a separate
+  predicate from `_progress_is_moving()`, which cannot detect this:
+  `messages` climbs, so the session reads as healthy.
+- `run_eval_client.py` captures the whole `/session/{id}/message` chain
+  and child sessions, and builds the transcript from it. Previously only
+  the final response object was recorded, so subagent tool use did not
+  reach the scanner; the scored turn's tools were also read from the
+  response object, where they do not appear.
+- `tools/pipeline.sh`: `stage_e2e` resolves the host through
+  `scripts/hostnet.py`. `localhost` is the worker, not the host, under a
+  CI runner. Its embedded Python is also single-line — indentation
+  damage previously raised `IndentationError` into `/dev/null`, so the
+  stage could not pass in any environment.
+- `tools/pipeline.sh` lints itself, and reports directory artifacts as
+  file count and size rather than a malformed byte count.
+- `scripts/tools/mock_openai_backend.py` emits the usage chunk
+  `stream_options` requests. Without it `Session.getUsage()` returns an
+  empty `Usage` and runs record zero tokens. The e2e test asserts
+  non-zero input and output.
+- `scripts/tools/axiom_cvv_verify.py` usage block names its own path.
 
 ### Added
 
-- **Provider-request capture** (`scripts/tools/capture_proxy.py`,
-  opt-in). opencode assembles the system array and tool definitions per
-  request and never persists them, so the outbound provider request is
-  the only place the resolved instruction set exists as bytes -- the
-  difference between recording what a model answered and what it was
-  asked. Enabled by setting `OPENCODE_CAPTURE_PROXY`; nothing sits in
-  the inference path otherwise. Parses the request and relays the
-  response byte for byte, so chunked framing and SSE delivery are
-  unaltered. A plain-HTTP provider is fully visible; an HTTPS provider
-  arrives as CONNECT with an opaque body, and each record says so.
-- **Catalog warm-up before `serve`.** `opencode models --refresh` runs
-  in the entrypoint, gated and non-fatal, moving 191 npm connections out
-  of the first request's path.
+- `scripts/tools/capture_proxy.py` records the resolved system prompt
+  and tool definitions sent to the provider. opencode assembles both per
+  request and does not persist them, so the outbound request is the only
+  place they exist. Off unless `OPENCODE_CAPTURE_PROXY` is set. Parses
+  the request, relays the response byte for byte, redacts credentials
+  before write. Plain HTTP is fully visible; HTTPS arrives as CONNECT
+  with an opaque body, and each record states which.
+- `scripts/trace_session_hang.py` enumerates session-creation
+  hypotheses, one variant each, with egress sampled during the hang.
+- `entrypoint.sh` runs `opencode models --refresh` before `serve`, gated
+  on `OPENCODE_WARM_CATALOG`, timeout-bounded and non-fatal. Moves 191
+  npm connections out of the first request's path.
+- `docker-compose.yml` gains a healthchecked `capture` service; `server`
+  depends on it.
+- `.env.example` documents `OPENCODE_CAPTURE_PROXY` and
+  `OPENCODE_CAPTURE_NO_PROXY`.
 
 ### Changed
 
-- **The development host's name is scrubbed from tracked files** -- 20
-  occurrences across 8 files, all comments and variable descriptions.
-  The `verify` check that reported them as a standing note is now a hard
-  failure, since the baseline is zero and any hit is a new
-  reintroduction into a public repo. It excludes itself by pathspec:
-  the pattern is the hostname, so the file matched itself and the check
-  could never reach zero.
-- **The e2e test's opencode pin moved 1.18.3 -> 1.18.23**, matching the
-  build the image ships. The old pin verified a response schema for a
-  build nobody ran. Note for anyone bisecting: the flat-JSON behaviour
-  change at 1.18.21 is a deliberate fix, not a regression -- an
-  `unknown` finish no longer ends a turn silently.
+- `scripts/test_run_eval_client_e2e.py` pins opencode 1.18.23, matching
+  the image. The flat-JSON test asserts the harness detects a
+  non-conforming backend; opencode 1.18.21 added `"unknown"` to the
+  loop-exit list in `session/prompt.ts`, and the previous assertion
+  pinned the pre-fix behaviour.
+- The development host name is removed from tracked files. `make verify`
+  fails on it rather than counting it, and excludes itself by pathspec.
 
 ### Added
 
@@ -122,7 +103,7 @@ Tagged versions are created after merging to `main`, per
 - **Live session progress while a tier runs.** The wait loop printed
   only on a status transition, and its one heartbeat was gated on
   status being `retry` -- a long tier sits at `busy`, so a tier doing
-  real work and a client wedged on a dead socket produced identical
+  work and a client wedged on a dead socket produced identical
   logs (nothing) until one of them stopped. A 221s tier logged one line
   and then silence. The heartbeat now fires on any unchanged status and
   carries what the session has done: messages, steps, tool calls with
@@ -133,7 +114,7 @@ Tagged versions are created after merging to `main`, per
   appended to the tier's `status_events`.
 - **`scripts/harness_notebook.py`** -- the interface notebooks use
   instead of hand-rolling HTTP. `OpencodeSession` (through the server,
-  so tool use and routing behave as in a real eval) and `OllamaModel`
+  so tool use and routing behave as in an eval) and `OllamaModel`
   (residency, discovery, `/api/show` detail, and direct `/api/chat`
   including images and thinking control). Wraps `run_eval_client.py`'s
   own logic rather than restating it, so a notebook inherits its fixes.
@@ -195,12 +176,12 @@ Tagged versions are created after merging to `main`, per
 - **Elapsed time counted host suspend as compute.** Wall-clock keeps
   running while a suspended machine is frozen, so a tier that worked
   two minutes and then slept four hours reported 16835s -- and that
-  reading was taken as a runaway agentic loop when the host had simply
+  reading was taken as a runaway agentic loop when the host had
   been asleep. `time.monotonic()` does not advance across suspend, so
   the divergence between the two since the last sample measures the
   sleep. The heartbeat now names it, records `suspended_s`, and does
   not report the frozen counters as a stall.
-- **`cvv_scan.py` could not fire on a genuine hedge-drop.**
+- **`cvv_scan.py` could not fire on a hedge-drop.**
   `BLANKET_CLOSING_ASSESSMENT` gates on a hedge appearing earlier in
   the turn, but `HEDGE_WORDS` held eight phrases and contained none of
   `might`, `not certain`, `unsure`, `possibly`, `seems`. Measured false
@@ -220,17 +201,17 @@ Tagged versions are created after merging to `main`, per
 
 - **Removed this project's own static `provider["local/ollama"]["models"]`
   list from `config/opencode.base.json` and `config/opencode.git-workspace.json`.**
-  Every container that runs opencode now mounts your real
+  Every container that runs opencode now mounts your
   `~/.config/opencode/opencode.json` read-only and merges it *under* the
   project's own config (confirmed via source: `config.ts`'s `loadGlobal()`
   always loads first, `OPENCODE_CONFIG` overlays on top -- an override,
   not a replacement, so the project's `permission`/`baseURL` settings still
   win regardless of what your global file sets on this same provider).
   **Requires exporting `OPENCODE_GLOBAL_CONFIG`** (absolute path, not
-  defaulted to a `~`-prefixed path -- confirmed via real `docker/compose`
+  defaulted to a `~`-prefixed path -- confirmed via `docker/compose`
   issues #6506/#3872 that tilde expansion in a Compose volume path is
   inconsistent) before running `docker-compose` or `terraform apply`, and
-  requires your own global config to actually declare
+  requires your own global config to declare
   `provider["local/ollama"]["models"]` for whatever local models you use.
   See REQUIREMENTS.md and INSTALL.md for the exact format expected.
   This replaces having to hand-edit 2-3 JSON files every time a new local
@@ -246,9 +227,9 @@ Tagged versions are created after merging to `main`, per
   search across `packages/opencode/src/session/`. Runs as a background
   loop inside the `server` container, polling `GET /session` and calling
   `DELETE /session/{id}` on anything idle past its TTL (confirmed via
-  source that this cancels in-flight work first, not just a bookkeeping
+  source that this cancels in-flight work first, rather than a bookkeeping
   delete). `local/ollama` sessions get an aggressive 10min TTL --
-  sustained Ollama residency is the actual resource cost this cuts.
+  sustained Ollama residency is the resource cost this cuts.
   Everything else gets a 60min fallback, kept above
   `run_eval_client.py`'s own 50min quota-wait threshold so it never
   preempts a legitimate cloud quota-retry. This is the safety net for a
@@ -259,17 +240,17 @@ Tagged versions are created after merging to `main`, per
   for a basic OpenCode session and a basic Ollama native-API session.
   Replace three earlier AI-drafted notebooks that each guessed a
   different, wrong shape for opencode's undocumented HTTP API.
-- Real, committed e2e test behind `run_eval_client.py`'s response-schema
+- Committed e2e test behind `run_eval_client.py`'s response-schema
   claim (`scripts/test_run_eval_client_e2e.py` +
-  `scripts/tools/mock_openai_backend.py`) -- installs real
+  `scripts/tools/mock_openai_backend.py`) -- installs
   `opencode-ai` via npm, runs `opencode serve` as a subprocess, drives
-  it through this repo's actual client functions against a real
+  it through this repo's client functions against a
   SSE-emitting mock backend. Not yet observed passing end-to-end in
   every environment tried -- see Known Limitations.
 - Quota/rate-limit exhaustion detected and reported distinctly (`Q`
   tier mark) instead of blocking indefinitely or risking a duplicate
   message. `quota_aware_send_message()` polls `GET /session/status`
-  concurrently with the real request and aborts cleanly past
+  concurrently with the request and aborts cleanly past
   `OPENCODE_QUOTA_WAIT_THRESHOLD_S` (default 3000s/50min) rather than
   re-POSTing to a session that might still be processing.
 - Per-run server-side log capture (`server.log` alongside
@@ -279,7 +260,7 @@ Tagged versions are created after merging to `main`, per
 - Live per-round-trip progress dots during a run, and per-tier HTTP
   errors (`E` mark) no longer crash the whole run.
 - `git-workspace` role (`bash: allow`/`edit: allow`, isolated by
-  mounting nothing but read-only `auth.json`) as a real place to run
+  mounting nothing but read-only `auth.json`) as an isolated place to run
   agentic/coding tasks -- not yet wired into the test ladder itself.
 - `jupyter` role: persistent authoring server for hand-writing custom
   test notebooks, bind-mounted to the host (not a Docker named volume).
@@ -292,27 +273,27 @@ Tagged versions are created after merging to `main`, per
   HTTP API was confirmed to accept `providerID`/`modelID` directly in
   a request payload, the per-model build stopped buying anything.
 - **Local Ollama models unified onto the same on-demand path as cloud.**
-  Removed a `for_each` Terraform resource that was launching 5 real
+  Removed a `for_each` Terraform resource that was launching 5
   eval-client runs against Ollama in parallel on every plain "Deploy
-  harness", regardless of `must_run = false` -- confirmed via a real
+  harness", regardless of `must_run = false` -- confirmed via a recorded
   deploy log. Local models now run through the exact same one-shot
   mechanism cloud models use.
 - **Terraform: `ollama_base_url` split into `opencode_ollama_base_url`
   (keeps `/v1`) and `ollama_native_base_url` (no `/v1`).** One shared
-  variable was feeding two consumers with genuinely incompatible URL
+  variable was feeding two consumers with incompatible URL
   shapes -- confirmed from Ollama's own source (`server/routes.go`):
   the OpenAI-compat surface (`/v1/*`) and the native API (`/api/*`)
   are two disjoint, hardcoded route trees; neither is derived from the
   other.
 - **Dockerfile split into `server` (light) and `harness` (heavy,
   extends `server`) stages.** Every prior build failure traced back to
-  dependencies the `server` role never actually used (spaCy,
+  dependencies the `server` role never used (spaCy,
   onnxruntime, click, PEP 668, a BuildKit `--chmod` requirement
   the development host's Docker doesn't support). `server` now only installs
   `ca-certificates` + `python3`.
 - **`auth-data/auth.json` extraction now automatic under Terraform**
   (`data.external.auth_keys`, wrapping `scripts/extract-opencode-key.sh
-  --all`) -- fixes a real failure where Docker silently creates an
+  --all`) -- fixes a failure where Docker silently creates an
   empty directory at a bind-mount source path that doesn't exist yet,
   producing an identical "credentials not found" error on every
   container that mounts the file.
@@ -343,12 +324,12 @@ Tagged versions are created after merging to `main`, per
 - `browse_results()` picked up non-model directories as fake "models"
   on the Terraform path (model directories live one level deeper than
   on Compose). Now derives the model list from wherever `report.json`
-  actually is, at any depth.
+  is, at any depth.
 - Ollama cold-start: a fresh local/ollama run's first tier was timing
-  out at exactly 300s with the server genuinely busy, not failing --
+  out at exactly 300s with the server busy, not failing --
   matches Ollama's documented 5-minute idle-unload eating into the
   tier's own budget. Fixed with an explicit warm-up call before the
-  real test ladder (`OPENCODE_WARMUP_TIMEOUT_S`, 600s default), plus
+  test ladder (`OPENCODE_WARMUP_TIMEOUT_S`, 600s default), plus
   explicit unload after the run finishes.
 
 ### Known Limitations
@@ -356,7 +337,7 @@ Tagged versions are created after merging to `main`, per
 - **A purely negative pass criterion cannot distinguish a refutation
   from silence.** The vacuous-pass-on-unrun-scan case is fixed above,
   but a tier carrying only `must_not_have_categories` is still
-  satisfied by an empty-but-genuine reply exactly as by a good answer.
+  satisfied by an empty reply exactly as by a good answer.
   Tiers need something positive to pass on, which is a change to
   `test_ladder.json` rather than to the client.
 - **`cvv_scan.py` detection remains recall-limited by construction.**
@@ -392,7 +373,7 @@ Tagged versions are created after merging to `main`, per
   way (`create_session` timing out at the same 20s bound) while the
   other passed -- suggesting something timing-sensitive rather than a
   hard categorical block. Root cause not yet confirmed; a live
-  `strace`/`tcpdump` capture during the hang is the next real
+  `strace`/`tcpdump` capture during the hang is the next
   diagnostic step. This is a pre-existing test behavior, not something
   introduced by any patch delivered so far -- the test spawns
   `opencode serve` directly, bypassing this repo's own
@@ -407,5 +388,5 @@ Tagged versions are created after merging to `main`, per
   INSTALL.md for why this is a deliberate trade-off, not an oversight.
 - Local Ollama models' `host.docker.internal` networking path is
   confirmed correct on paper (source-level) but has not been observed
-  working end-to-end against a real Ollama instance from every
+  working end-to-end against a live Ollama instance from every
   environment this project has been developed in.

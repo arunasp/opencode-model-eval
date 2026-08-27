@@ -44,7 +44,7 @@
         tf-init tf-plan tf-apply tf-destroy tf-output tf-eval \
         git-workspace tf-git-workspace jupyter-up jupyter-down jupyter-logs \
         tf-jupyter-up tf-jupyter-down \
-        lint test verify e2e ci client containers exec-bits print-harness-root
+        lint prose test verify e2e ci client containers exec-bits print-harness-root
 
 help:
 	@echo "make eval                          interactive model picker"
@@ -72,6 +72,7 @@ help:
 	@echo "make tf-jupyter-up                 same, Terraform side"
 	@echo "make tf-jupyter-down               same, Terraform side"
 	@echo "make lint                          shellcheck, py_compile, config parse"
+	@echo "make prose                         filler-word ratchet over the docs"
 	@echo "make test                          run every scripts/test_* suite"
 	@echo "make verify                        assert the Compose resolver is the only call path"
 	@echo "make e2e                           real end-to-end check against a live Ollama, skips if none reachable"
@@ -79,7 +80,7 @@ help:
 	@echo "make containers                    build, start, probe and stop the stack (needs a docker daemon)"
 	@echo "make exec-bits                     restore executable bits the Filesystem connector drops"
 	@echo "make print-harness-root            print the value to put in .env as HARNESS_ROOT"
-	@echo "make ci                            lint, test, verify, e2e and client in one run"
+	@echo "make ci                            lint, prose, test, verify, e2e and client in one run"
 
 # Default OPENCODE_GLOBAL_CONFIG the same way the Terraform path already
 # does (var.opencode_global_config_path's own default) -- ?= only takes
@@ -128,6 +129,9 @@ COMPOSE := bash scripts/compose.sh
 # treats exit 2 as SKIPPED when a tool is missing from this environment.
 lint:
 	@bash tools/pipeline.sh lint
+
+prose:
+	@bash tools/pipeline.sh prose
 
 test:
 	@bash tools/pipeline.sh test

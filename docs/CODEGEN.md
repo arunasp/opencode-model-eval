@@ -1,103 +1,92 @@
-# CODEGEN.md
+# Code generation
 
-Scoped to what this repo actually contains. This is **not** a copy of
-`opencode-plugin-ctx-squid`'s CODEGEN.md — that project is a TypeScript
-opencode plugin; this one is a Docker/Terraform test harness with no
-TypeScript in it. Carrying over its language-specific sections would be
-the same scope-creep mistake already caught once in that project
-(unused Python/MQL5 sections pruned after being flagged) — not repeating
-it here.
+Scoped to what this repo contains: a Docker and Terraform test harness.
+No TypeScript, no MQL5. Language sections are added when a language
+enters the repo, not pre-provisioned.
 
-## Languages actually in use here
+## Languages in use
 
-- **Bash** (`entrypoint.sh`, `scripts/*.sh`)
-- **Python** (`scripts/*.py`, `scripts/tools/*.py`) — added when the CVV
-  scoring layer (discovery, structured test ladder, cvv_scan.py,
-  axiom_cvv_verify.py) was introduced. Section below, not
-  pre-provisioned before it existed.
-- **HCL** (`terraform/*.tf`)
-- **JSON** (`config/opencode.base.json`, `task-suite/test_ladder.json`,
-  generated result files)
-- **YAML** (`docker-compose.yml`)
-- **Dockerfile**
+| Language | Where |
+|---|---|
+| Bash | `entrypoint.sh`, `scripts/*.sh`, `tools/pipeline.sh` |
+| Python | `scripts/*.py`, `scripts/tools/*.py` |
+| HCL | `terraform/*.tf` |
+| JSON | `config/*.json`, `task-suite/test_ladder.json`, results |
+| YAML | `docker-compose.yml` |
+| Dockerfile | `Dockerfile` |
 
 ## Bash
 
-- Shebang: `#!/bin/bash`, invoked as `bash script.sh` — never `./script.sh`
-  relying on the execute bit alone, never a mismatched interpreter.
+- Shebang `#!/bin/bash`, invoked as `bash script.sh`. Never
+  `./script.sh` relying on the execute bit — the Filesystem connector
+  drops it, which is why `make exec-bits` exists.
 - `set -euo pipefail` at the top of every script.
-- Lint with `shellcheck` before considering a script done. Zero warnings,
-  not just zero errors — `SC2155` (masked return values in
-  `readonly x=$(...)`) has already been hit once in this repo and fixed;
-  don't reintroduce it.
-- Fail loudly with a message on stderr and a non-zero exit, never a
-  silent empty/default output standing in for a real error.
+- `shellcheck` clean before a script is done: zero warnings, not zero
+  errors. `SC2155`, masked return values in `readonly x=$(...)`, has
+  been hit here and fixed.
+- Fail with a message on stderr and a non-zero exit. An empty or default
+  output must never stand in for an error.
 
 ## Python
 
-- Shebang: `#!/usr/bin/env python3`, invoked as `python3 script.py` —
-  never `bash script.py`, never relying on the execute bit alone.
-- PEP 8: 4-space indent, snake_case for variables/functions, PascalCase
-  for classes, UPPER_SNAKE_CASE for constants, one file = one purpose.
-- Type hints on function parameters and return types.
-- Prefer the standard library over new dependencies. `cvv_scan.py` has
-  zero third-party dependencies by design; `axiom_cvv_verify.py`'s
-  spaCy/onnxruntime dependencies are explicitly optional, with graceful
-  degradation to prior (already-validated) behavior if absent — new
-  Python here should follow that same pattern rather than adding a hard
-  dependency where a stdlib approach or an optional-with-fallback one
-  would do.
-- No stubs — either a function is implemented and tested against real
-  input, or it doesn't exist yet. This repo's `cvv_scan.py` and
-  `axiom_cvv_verify.py` both have a documented history of exactly this
-  kind of unverified-on-real-input failure (regex working on a hand-
-  simplified test case, breaking on the real one) — re-run against real
-  data before calling anything done, not just the isolated unit test.
-- No MQL5 section here, deliberately. This repo has no MQL5 in it —
-  see the note at the top of this file about not copying unused
-  language sections wholesale from a different project's CODEGEN.md.
+- Shebang `#!/usr/bin/env python3`, invoked as `python3 script.py`.
+- PEP 8: 4-space indent, `snake_case` functions, `PascalCase` classes,
+  `UPPER_SNAKE_CASE` constants, one file one purpose.
+- Type hints on parameters and return types.
+- Standard library over new dependencies. `cvv_scan.py`,
+  `capture_proxy.py`, `hostnet.py` and `prose_check.py` have no
+  third-party dependencies. `axiom_cvv_verify.py`'s spaCy and
+  onnxruntime imports are optional, degrading to already-validated
+  behaviour when absent — follow that pattern rather than adding a hard
+  dependency.
+- No stubs. A function is implemented and tested against production-like
+  input, or it does not exist. Both scanners here have a history of the
+  opposite failure: a regex that worked on a hand-simplified case and
+  broke on the recorded transcript.
 
-## Terraform / HCL
+## Terraform and HCL
 
-- Provider versions pinned (`~> 4.5` for `kreuzwerker/docker`), not
-  floating.
-- `triggers` blocks content-hash the actual files that matter
-  (`filesha1(...)`), not a manual version bump — so `terraform plan`
-  only shows a rebuild diff when something real changed.
-- `.terraform.lock.hcl` gets committed after the first real `terraform
-  init` (pins the exact provider build for reproducibility). `.terraform/`,
-  `*.tfstate`, `*.tfstate.backup`, and `*.tfvars` stay local and
-  gitignored.
-- No `terraform` binary or Docker daemon is available in the environment
-  these files were authored in — every `.tf` file here was syntax-checked
-  with a Python HCL2 parser, not `terraform validate`. Run `terraform
-  init && terraform validate && terraform plan` yourself before trusting
-  this beyond "parses."
+- Provider versions pinned (`~> 4.5` for `kreuzwerker/docker`).
+- `triggers` blocks content-hash the files that matter via
+  `filesha1(...)`, so `terraform plan` shows a rebuild only when
+  something changed.
+- Commit `.terraform.lock.hcl` after the first `terraform init`. Keep
+  `.terraform/`, `*.tfstate`, `*.tfstate.backup` and `*.tfvars` local
+  and gitignored.
+- The `.tf` files here were syntax-checked with a Python HCL2 parser,
+  not `terraform validate` — no terraform binary was available where
+  they were written. Run `terraform init && terraform validate &&
+  terraform plan` before trusting them beyond parsing.
 
 ## Docker
 
-- **Static server, not a build-per-model matrix.** Originally: immutable
-  upstream base → shared/cached harness layer → thin per-model layer
-  (`MODEL_PROVIDER`/`MODEL_ID` baked in as build args), one image per
-  model. Replaced once `opencode serve`'s HTTP API was confirmed to
-  accept `providerID`/`modelID` per request
-  (`server/routes/instance/httpapi/handlers/session.ts`) — model
-  selection is a runtime request parameter now, not a build variant.
-  This isn't a violation of the old "don't collapse stages for
-  convenience, cache-friendliness is the point" rule — it makes that
-  rule's underlying concern (rebuild cost per model) moot, since there's
-  no per-model build left to cache against. If a future change
-  reintroduces a real need for model-specific image content, re-add the
-  split then, with the same reasoning documented, not by default.
-- No secrets baked into any image layer. Auth is mounted at runtime only
-  (see `scripts/extract-opencode-key.sh`), never `COPY`'d.
+- **One static server, not a build-per-model matrix.** Model selection
+  is a request parameter (`providerID`/`modelID`), confirmed in
+  `server/routes/instance/httpapi/handlers/session.ts`. The earlier
+  design baked `MODEL_PROVIDER`/`MODEL_ID` into a per-model layer; there
+  is no per-model build left to cache. Reintroduce the split only if
+  model-specific image content becomes necessary, with the reasoning
+  recorded.
+- No secrets in any image layer. Auth is mounted at runtime — see
+  `scripts/extract-opencode-key.sh` — never `COPY`'d.
 
 ## General
 
-- No stubs, no placeholder functions "to fill in later" — either a piece
-  is built and tested, or it's explicitly documented as not-yet-built
-  (see README's "Known gaps" section) rather than faked with a stub that
-  looks done.
-- Every generated artifact gets checked against what the project actually
-  contains before being called finished — grep/view the real result, not
-  just the reasoning that produced it.
+- No stubs and no placeholder functions. A piece is built and tested, or
+  it is recorded as unbuilt in README's "Known gaps".
+- Check the artifact, not the reasoning that produced it. Read the file
+  back, grep the result, inspect the tree.
+
+## Prose
+
+Documentation is linted by `make prose`
+(`scripts/tools/prose_check.py`), which follows the Google developer
+documentation style guide, CircleCI's docs style guide and the OpenStack
+writing guidelines, plus rules ported from the `vale-ai-tells` and
+`deslop` Vale packages for the structural tics of machine-written text.
+
+Files carrying pre-existing hits are listed in the script's `BASELINE`
+and may only improve; any other file must be clean. Suppress with
+`<!-- prose-disable-file -->`, a `<!-- prose-disable -->` /
+`<!-- prose-enable -->` section, `<!-- prose-disable-next-line -->`, or a
+trailing `# noqa: prose`.

@@ -1,9 +1,9 @@
 # Requirements
 
-Everything here was verified against actual repo content (shebangs,
-`command -v` checks already in the scripts, Dockerfile package lists,
-`terraform/versions.tf`), not assumed. Run `bash scripts/check-requirements.sh`
-to check your own machine against this list automatically.
+Verified against repo content — shebangs, the `command -v` checks in the
+scripts, Dockerfile package lists, `terraform/versions.tf`. Run `bash
+scripts/check-requirements.sh` to check your own machine against this
+list.
 
 ## Always required (host machine)
 
@@ -14,8 +14,8 @@ to check your own machine against this list automatically.
 | **bash** | `harness-control.sh`, `scripts/select-and-run-eval.sh`, `scripts/extract-opencode-key.sh`, `scripts/ensure-auth-data.sh`, `scripts/tf-select-and-run-eval.sh`, `scripts/tf-extract-auth-keys.sh`, `scripts/ollama-model-switch.sh` all shebang `#!/bin/bash` or `#!/usr/bin/env bash` | POSIX `sh` alone is NOT enough for these -- `entrypoint.sh` is the one script that deliberately stays POSIX `sh` (runs inside the container, which has no bash installed by design) |
 | **jq** | Hard requirement (no fallback) in `scripts/extract-opencode-key.sh`, `scripts/tf-extract-auth-keys.sh`, `scripts/ollama-model-switch.sh`; soft dependency (falls back to `less`) in `harness-control.sh`'s results browser | Setup (credential scoping) needs this on every path, Compose or Terraform |
 | **Python 3.10+** | `discover_and_select_model.py` and others use `X \| None` / `list[dict]` union-type syntax, which needs 3.10+ | Only matters for scripts you run directly on the host (most Python runs inside containers, which get their own pinned `python3` from the base image) |
-| **A real opencode global config**, `~/.config/opencode/opencode.json` | Every container that runs opencode (`server`, `discover`, `eval`, `git-workspace`) mounts this read-only and merges it under this project's own config. Your own `provider["local/ollama"]["models"]` declarations are what makes a given Ollama model resolvable at all -- this project no longer maintains its own static copy of that list. **Format required**: a `provider["local/ollama"]` entry with a `models` object listing every local model you want reachable, e.g. `{"models": {"qwen2.5-coder:7b": {}, "NitrAI/VibeThinker-3B:latest": {}}}`. Confirmed via source (`config.ts`'s `loadGlobal()`) that this loads *before* the project's own `OPENCODE_CONFIG` -- an overlay, not a replacement, so your global permissions/baseURL settings on this provider are safely overridden by the project's own (`edit`/`bash: deny` for locked-down roles, the container-correct `baseURL` via `OPENCODE_OLLAMA_BASE_URL`) regardless of what your global file sets |
-| **`OPENCODE_GLOBAL_CONFIG`** env var, set to the absolute path of the file above | How you supply it depends on which of the two Compose invocation paths you use -- see [Two ways Compose gets invoked](#two-ways-compose-gets-invoked) below. Deliberately not defaulted to a `~`-prefixed path in `docker-compose.yml`: confirmed via real `docker/compose` issues (#6506, #3872) that tilde expansion in a volume host path is inconsistent across compose versions and container-vs-native installs. The Terraform path uses `var.opencode_global_config_path` (same default, expanded via Terraform's own `pathexpand()`, which -- unlike Compose -- is documented, reliable behavior) |
+| **An opencode global config**, `~/.config/opencode/opencode.json` | Every container that runs opencode (`server`, `discover`, `eval`, `git-workspace`) mounts this read-only and merges it under this project's own config. Your own `provider["local/ollama"]["models"]` declarations are what makes a given Ollama model resolvable at all -- this project no longer maintains its own static copy of that list. **Format required**: a `provider["local/ollama"]` entry with a `models` object listing every local model you want reachable, e.g. `{"models": {"qwen2.5-coder:7b": {}, "NitrAI/VibeThinker-3B:latest": {}}}`. Confirmed via source (`config.ts`'s `loadGlobal()`) that this loads *before* the project's own `OPENCODE_CONFIG` -- an overlay, not a replacement, so your global permissions/baseURL settings on this provider are safely overridden by the project's own (`edit`/`bash: deny` for locked-down roles, the container-correct `baseURL` via `OPENCODE_OLLAMA_BASE_URL`) regardless of what your global file sets |
+| **`OPENCODE_GLOBAL_CONFIG`** env var, set to the absolute path of the file above | How you supply it depends on which of the two Compose invocation paths you use -- see [Two ways Compose gets invoked](#two-ways-compose-gets-invoked) below. Deliberately not defaulted to a `~`-prefixed path in `docker-compose.yml`: tilde expansion in a volume host path is inconsistent across compose versions and container-vs-native installs (docker/compose #6506, #3872). The Terraform path uses `var.opencode_global_config_path` (same default, expanded via Terraform's `pathexpand()`, which is documented and reliable) |
 | **`HOST_UID`** / **`HOST_GID`** | The uid:gid the containers run as. `entrypoint.sh` starts as root, ensures a passwd entry for this pair exists, then drops privileges, so files written to `results/` and `notebooks/` are owned by you rather than root. The Makefile derives both from `id -u`/`id -g`; anything invoking Compose directly reads them from `.env`, falling back to `1000:1000`. Terraform uses `var.host_uid`/`var.host_gid` |
 | **`HARNESS_ROOT`** | The absolute host path of this directory, used as the prefix for every bind-mount source. The Makefile derives it from its own location, so Path A needs nothing. It is required in `.env` when something drives Compose from a different filesystem view, such as a container holding the Docker socket -- there a relative source resolves to a path the daemon cannot see, and Docker creates an empty directory at the mount source rather than failing. Get the value with `make print-harness-root`, not `pwd` (correct only if your shell is already in this directory) and not `realpath`: the auth extraction scripts and Terraform's `abspath()` both build the same paths without resolving symlinks, and a value that disagrees with them is read as drift and recreates containers |
 
@@ -54,8 +54,8 @@ explicitly, as every Makefile target does, enables its profile, so
 
 | Dependency | Why |
 |---|---|
-| **tmux** | Hard requirement, checked explicitly (`harness-control.sh` exits with a clear error if missing) -- the whole UI is a tmux split-pane session. Run it directly from a real terminal, not piped or from CI |
-| A real terminal | Host-side arrow-key/j-k model picker (`scripts/lib/host-model-picker.sh`) needs a TTY; without one, discovery falls back to an unattended auto-pick instead |
+| **tmux** | Hard requirement, checked explicitly (`harness-control.sh` exits with a clear error if missing) -- the whole UI is a tmux split-pane session. Run it from an interactive terminal, not piped or from CI |
+| A TTY | The host-side arrow-key/j-k model picker (`scripts/lib/host-model-picker.sh`) needs one; without it, discovery falls back to an unattended auto-pick |
 
 ## Required for the Terraform path
 
@@ -73,7 +73,7 @@ Providers are pulled automatically by `terraform init` -- nothing to install by 
 | Dependency | Why |
 |---|---|
 | **Ollama**, running on the host | The `server` container reaches it via `host.docker.internal:host-gateway` |
-| Ollama started with `OLLAMA_HOST=0.0.0.0:11434` | Its default bind (`127.0.0.1` loopback-only) is NOT reachable from inside a container -- this is a real, confirmed gotcha, not a hypothetical one |
+| Ollama started with `OLLAMA_HOST=0.0.0.0:11434` | Its default bind (`127.0.0.1`, loopback only) is not reachable from inside a container. Confirmed, not hypothetical |
 | **curl** | `scripts/ollama-model-switch.sh` (host-side load/unload control) |
 
 ## Required at Docker build time
@@ -81,7 +81,7 @@ Providers are pulled automatically by `terraform init` -- nothing to install by 
 | Dependency | Why |
 |---|---|
 | Network access to `github.com` | `scripts/fetch_embedding_model.sh` clones a GitHub repo with ONNX embedding weights committed in-repo (deliberately avoids a Hugging Face/Ollama runtime dependency). Only matters for the best-case onnxruntime-backed semantic path -- harmless if it fails, `axiom_cvv_verify.py` falls through to its own TF-IDF implementation either way |
-| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`, `setpriv` (the real one from util-linux -- BusyBox ships an applet of that name carrying none of the flags the privilege drop needs). `harness` stage adds: `py3-pip`, `git`, then `pip install spacy click`, `pip install onnxruntime tokenizers numpy` (`axiom_cvv_verify.py` tries this first for its semantic action-detection, falls through to a TF-IDF implementation needing nothing beyond numpy if this genuinely isn't available -- expected on Alpine/musllinux and/or Python 3.14, confirmed no published wheel for either). `jupyter` stage adds `pip install jupyterlab ipywidgets` (ipywidgets backs `harness_notebook.ModelPicker`; the library degrades to environment/parameter resolution without it, so a notebook still runs in an image that lacks it) |
+| Network access to the standard `apk`/`pip` package sources | Dockerfile's `server` stage: `ca-certificates`, `python3`, `setpriv` (from util-linux — BusyBox ships an applet of that name carrying none of the flags the privilege drop needs). `harness` stage adds `py3-pip`, `git`, then `pip install spacy click` and `pip install onnxruntime tokenizers numpy` (`axiom_cvv_verify.py` tries this first for semantic action-detection and falls through to a TF-IDF implementation needing nothing beyond numpy — expected on Alpine/musllinux and Python 3.14, where no wheel is published). `jupyter` stage adds `pip install jupyterlab ipywidgets`; ipywidgets backs `harness_notebook.ModelPicker`, and the library degrades to environment and parameter resolution without it |
 
 None of these are host-side installs -- they happen inside the Docker build, listed here so a build failure in an offline/restricted environment points at the right cause.
 
@@ -103,15 +103,15 @@ warning, and recorded a PASS on an empty findings set -- see README's
 
 | Dependency | Why | Notes |
 |---|---|---|
-| **node + npm** | `scripts/test_run_eval_client_e2e.py` installs and runs the real `opencode-ai` npm package as part of its own real end-to-end test | Not needed for normal use -- only for running that specific test. Skips itself with a clear message if node/npm aren't on PATH |
+| **node + npm** | `scripts/test_run_eval_client_e2e.py` installs and runs the `opencode-ai` npm package as part of its end-to-end test | Not needed for normal use. Skips with a clear message if node/npm are absent |
 | Network access to the npm registry (`registry.npmjs.org`) | Same test, to install `opencode-ai` | |
 | ~~Network access to whatever domain `opencode serve` reaches out to~~ | **Disproven 2026-08-27.** This row previously said the e2e test's hang was an unidentified outbound call and that a hang at `POST /session` "is why". It is not. Measured cause: `opencode serve` accepts TCP connections roughly 1.5s before its route layer can serve, and a request landing in that window is received, drained from the socket buffer, and never answered — so no finite timeout catches it. Reproduced on 1.18.3 and 1.18.23; unrelated to egress. The test now waits for an answered HTTP request rather than an open port. `scripts/trace_session_hang.py` is the harness that settled it | No network requirement here at all |
-| **numpy** (host-side, only if running `scripts/tools/test_axiom_cvv_action_detection.py` directly outside Docker) | That test imports `axiom_cvv_verify.py`, which imports numpy unconditionally for its TF-IDF fallback (and the onnxruntime path, when available) | Guaranteed present inside the actual Docker image (a transitive dependency of spaCy, installed at build time) -- this only matters if you want to run this one test file directly on your host/local venv rather than inside a container. `pip install numpy` into whatever venv you use for that. Patch-bundle verification scripts skip this specific test with a clear message if numpy isn't importable on the host, rather than treating it as a hard failure |
-| **shellcheck** | Dev-side bash linting, referenced in `docs/BRANCHING.md`'s verification step and this project's own patch-bundle scripts | Not required to run the harness itself |
-| **terraform** binary specifically (as opposed to just HCL2-parseable files) | A real `terraform validate`/`plan`/`apply` | Patch bundles fall back to a brace-balance sanity check if this isn't installed, which is explicitly NOT a substitute |
+| **numpy** (host-side, only when running `scripts/tools/test_axiom_cvv_action_detection.py` outside Docker) | That test imports `axiom_cvv_verify.py`, which imports numpy unconditionally for its TF-IDF fallback and for the onnxruntime path | Present inside the Docker image as a transitive dependency of spaCy. `pip install numpy` into whatever venv you use if you want to run this one test file on the host |
+| **shellcheck** | Bash linting; `make lint` skips the check when it is absent | Not required to run the harness |
+| **terraform** binary, as opposed to HCL2-parseable files | `terraform validate` / `plan` / `apply` | Without it, only a brace-balance sanity check is possible, which is not a substitute |
 
 ## Not required
 
-- **Node/npm for normal use** -- only the optional e2e test needs it; the actual harness (`run_eval_client.py`, `discover_and_select_model.py`, etc.) is Python stdlib only, deliberately (see `docs/CODEGEN.md`)
+- **Node/npm for normal use** -- only the optional e2e test needs it. The harness itself (`run_eval_client.py`, `discover_and_select_model.py` and the rest) is Python stdlib only by design, see `docs/CODEGEN.md`
 - **A Hugging Face account/token** -- the embedding model is fetched from a plain GitHub clone, not the HF Hub
 - **Ollama** -- only if you're testing local models; cloud-provider evals need nothing beyond your `auth.json`

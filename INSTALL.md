@@ -11,7 +11,7 @@ How you supply configuration depends on how you invoke Compose. See
 full description of both paths.
 
 **At a shell**, export `OPENCODE_GLOBAL_CONFIG` so every container can
-find your real opencode global config:
+find your opencode global config:
 
 ```bash
 export OPENCODE_GLOBAL_CONFIG="$HOME/.config/opencode/opencode.json"
@@ -45,13 +45,13 @@ resolvable at all now. If you add a new local model (`ollama pull ...`),
 add it there too — no project file needs editing. See REQUIREMENTS.md for
 the exact format expected. Not set to a `~`-prefixed default in
 `docker-compose.yml` deliberately — tilde expansion in a Compose volume
-path is inconsistent across compose versions (confirmed via real
-`docker/compose` issues #6506, #3872), so this needs to be a real
+path is inconsistent across compose versions (docker/compose
+issues #6506, #3872), so this needs to be an absolute
 shell-expanded absolute path, exported before you run Compose or
 `terraform apply`.
 
-Scope credentials down to the one provider key each container actually
-needs, rather than mounting your real (likely multi-provider) auth.json
+Scope credentials down to the one provider key each container
+needs, rather than mounting your whole multi-provider auth.json
 wholesale:
 
 ```bash
@@ -81,15 +81,15 @@ Compose has no precondition/
 pre-flight hook mechanism on either CLI, unlike Terraform's `terraform_data` +
 `precondition`, so this can't run automatically the way the Terraform
 path's does — it's a script you run yourself, once, before
-`make server-up` or an eval run. What it actually fixes: Docker's bind-mount
+`make server-up` or an eval run. What it fixes: Docker's bind-mount
 behavior silently creates an EMPTY DIRECTORY at `auth-data/auth.json`
-if that path doesn't exist yet as a real file when a container first
+if that path does not exist as a file when a container first
 mounts it — hit live during this project's own setup, every
 `server`/`discover`/`eval` container failing identically with
 "credentials not found" because the mount target was a phantom
 directory, not a missing file. `ensure-auth-data.sh` detects that
 exact case and clears it via `rmdir` (refuses on anything non-empty,
-won't delete real content), then runs the real extraction -- same
+will not delete content), then runs the extraction -- same
 script, same effect as running `extract-opencode-key.sh` directly, plus
 the one-time phantom-directory cleanup this specific failure mode needs.
 
@@ -113,7 +113,7 @@ menu (30% menu pane / 70% output pane):
 bash harness-control.sh
 ```
 
-Requires a real terminal and `tmux` (hard dependency, no fallback —
+Requires a TTY and `tmux` (hard dependency, no fallback —
 run it directly, not piped or from CI). All model/provider picking
 happens in the menu pane itself via `scripts/lib/host-model-picker.sh`'s
 host-side arrow-key/j-k picker — never inside a container, never a
@@ -143,17 +143,17 @@ bash scripts/select-and-run-eval.sh --dry-run hy3   # print the compose command,
 ```
 
 Local Ollama options are derived live from `compose config
---services`, so this can't drift from the actual configured service
+--services`, so this cannot drift from the configured service
 list. Cloud is a single `cloud` entry standing in for live discovery
 via `opencode models --verbose` (the `discover` service) — not a fixed
 list anymore; see README.md's "Known gaps" for why the earlier
 per-model-hardcoded design (both here and in Terraform's now-deleted
 `var.models`) was dropped. Picking which model to use happens entirely
 on the HOST, not inside Docker: `discover` runs non-interactively
-(`--list-json`, just returns the candidate list) when a real terminal
+(`--list-json`, just returns the candidate list) when a TTY
 is attached, and `scripts/lib/host-model-picker.sh`'s arrow-key (or
 j/k) menu runs on the host terminal to choose one — never a TTY
-inside the container. Without a real terminal (CI, piped input),
+inside the container. Without a TTY (CI, piped input),
 `discover` falls back to its own unattended size-heuristic auto-pick
 instead, same as before.
 
@@ -203,9 +203,9 @@ docker compose run --rm -e OPENCODE_MODEL_PROVIDER=local/ollama -e OPENCODE_MODE
 
 `discover_and_select_model.py`'s free-tier heuristic (cost field absent
 or all-zero = free) is inferred from opencode's confirmed config schema
-but hasn't been spot-checked against real provider output — if selection
+but has not been spot-checked against provider output — if selection
 looks wrong, run `opencode models --verbose` directly and inspect the
-actual `cost` shape before trusting the filter blindly.
+`cost` shape before trusting the filter blindly.
 
 **Terraform path** (plan/apply/destroy discipline, content-hashed rebuild
 triggers):
@@ -251,13 +251,13 @@ bounded by the selection cannot later be read as a model limit.
 
 The same values can come from `OPENCODE_EVAL_CATEGORIES` and
 `OPENCODE_EVAL_TIERS`, which is how to pass them through Compose or a
-`docker run` that cannot easily append arguments.
+`docker run` that cannot append arguments.
 
 ## Writing notebooks against the harness
 
 `scripts/harness_notebook.py` is the interface a notebook should use
 rather than hand-rolling HTTP. It exists because the logic it wraps
-carries fixes that came from real failures -- `extract_reply()` raising
+carries fixes that came from observed failures -- `extract_reply()` raising
 on an error finish after a context overflow once scored a clean pass
 against an empty transcript, `abort_session()` on every exception path
 after sessions were left retrying server-side, the Ollama warm-up after
@@ -282,7 +282,7 @@ with OllamaModel("qwen3.8:latest") as m:   # warms before, unloads after
 ```
 
 **Which to use.** `OpencodeSession` for anything meant to resemble an
-eval -- it is the path a real run takes. `OllamaModel.chat()` goes
+eval -- it is the path a run takes. `OllamaModel.chat()` goes
 straight to Ollama's native API, which bypasses opencode entirely: no
 tool use, no permission profile, no provider routing. That is a
 legitimate thing to want (raw behaviour, cold-start measurement, prompt
@@ -336,12 +336,12 @@ failure — check the corresponding `tier1.json`'s `reason` field:
 `needs_manual_review: true` means no CVV violation fired but the tier
 requires human/test confirmation (format compliance, code correctness)
 that this harness can't check automatically. Don't read a
-`needs_manual_review` stop as the same thing as an actual CVV violation.
+`needs_manual_review` stop as the same thing as a CVV violation.
 Each category entry also carries a `progress_dots` string (`.` pass,
 `F` fail, `R` needs review, `E` request/HTTP error, `Q` quota/rate-limit
 exhausted) — same character sequence printed live to the console as
 each tier runs, and again as an aligned grid at the end of the run. `E`
-means the tier never got a real answer to score for a genuine
+means the tier never got an answer to score, for a
 error (e.g. the model ID doesn't exist, a malformed response, a
 connection failure) — treat it as "inconclusive," not a capability
 failure the way `F` is. `Q` is a DIFFERENT kind of inconclusive: it
@@ -356,12 +356,12 @@ much longer opencode's own next attempt would have needed) and
 **Console output while a run is in progress:** each tier prints a
 flushed, timestamped marker per HTTP round-trip (`[session:+0.3s]`,
 `[setup:+12.1s]`, `[probe:+45.6s]` -- elapsed seconds since the tier
-itself started, not wall-clock) as it happens, not just once the whole
+itself started, not wall-clock) as it happens, rather than once the whole
 tier finishes.
 
 Between those markers the run also prints a heartbeat roughly every
 `OPENCODE_PROGRESS_PRINT_INTERVAL_S` (60s default) for as long as the
-status is unchanged, carrying what the session has actually done:
+status is unchanged, carrying what the session has done:
 
 ```
 [eval-client] busy 125s: msgs 15 | steps 12 | subagents 1 | tools 27 | last subagent webfetch:completed | text 1914ch | reasoning 2892ch
@@ -370,7 +370,7 @@ status is unchanged, carrying what the session has actually done:
 Those counters are read from the session's own message list, including
 any subagent the `task` tool dispatched into a child session -- the
 parent goes quiet for the whole subagent run, so following children is
-what keeps the numbers moving while real work happens. When nothing
+what keeps the numbers moving while work happens. When nothing
 advanced between two heartbeats the line says so outright:
 
 ```
@@ -400,4 +400,4 @@ that case by comparing monotonic against wall-clock time and says so:
 
 The timeouts themselves are still wall-clock, so the 300s message
 bound, `OPENCODE_WARMUP_TIMEOUT_S` and the quota threshold can all fire
-on resume for a request that was never actually slow.
+on resume for a request that was never slow.
