@@ -61,9 +61,18 @@ Squashing or rebasing unpushed commits is fine; anything already on
 
 1. Tag the current tip — `git tag backup/pre-<reason>-<date>` — so the
    pre-rewrite chain survives a bad rebase.
-2. Check for refs pointing into the range being rewritten
-   (`git for-each-ref` against `git rev-list origin/main..main`). A
-   branch left pointing at a rewritten commit sits on an orphaned chain.
+2. Check for refs pointing into the range being rewritten. Dereference
+   annotated tags or the check misses them:
+
+   ```bash
+   git for-each-ref --format='%(refname) %(objectname) %(*objectname)'
+   ```
+
+   `%(objectname)` on an annotated tag is the tag object, not the commit,
+   so a plain comparison against `git rev-list origin/main..main` finds
+   branches and misses every release tag — the one ref type a release
+   process creates. `%(*objectname)` is the dereferenced commit. A branch
+   or tag left pointing at a rewritten commit sits on an orphaned chain.
 3. Compare `HEAD^{tree}` before and after. A squash must not change
    content; if the trees differ, do not move `main`.
 
