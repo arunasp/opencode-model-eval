@@ -126,7 +126,8 @@ shell_files() {
     scripts/check-requirements.sh \
     scripts/fetch_embedding_model.sh \
     scripts/test_ollama_model_switch.sh \
-    scripts/test_compose_detection.sh
+    scripts/test_compose_detection.sh \
+    tools/pipeline.sh
 }
 
 stage_lint() {
@@ -283,6 +284,11 @@ stage_verify() {
   fi
 
   local resolved_default expected_default
+  # shellcheck disable=SC2016
+  # Single quotes are the point: $OPENCODE_GLOBAL_CONFIG must be expanded
+  # by the INNER bash after the library has set it, not by this shell
+  # before it runs. Double quotes here would expand it to the outer
+  # value and the check would pass against itself.
   resolved_default="$(env -u OPENCODE_GLOBAL_CONFIG bash -c     'source scripts/lib/opencode-global-config.sh; echo "$OPENCODE_GLOBAL_CONFIG"')"
   expected_default="$HOME/.config/opencode/opencode.json"
   if [ "$resolved_default" = "$expected_default" ]; then
@@ -302,6 +308,10 @@ stage_verify() {
   fi
 
   local make_recipe
+  # shellcheck disable=SC2016
+  # Single quotes again deliberate: make must receive the literal
+  # $(OPENCODE_GLOBAL_CONFIG) to expand as a MAKE variable. Letting the
+  # shell touch it first would ask the wrong interpreter.
   make_recipe="$(env -u OPENCODE_GLOBAL_CONFIG make --no-print-directory --eval='p: ; @echo \$(OPENCODE_GLOBAL_CONFIG)' p 2>/dev/null)"
   if [ "$make_recipe" = "$expected_default" ]; then
     log "Makefile resolves the same default ($expected_default)"
@@ -425,17 +435,36 @@ stage_e2e() {
   # elsewhere in this file) from "a real Ollama answered and the
   # discovered model list actually came back populated" (a real PASS,
   # not just "the script did not crash").
-  local tags_url="${OPENCODE_OLLAMA_TAGS_URL:-http://localhost:11434/api/tags}"
-  if ! python3 -c "
- import sys, urllib.request
- try:
-     urllib.request.urlopen('$tags_url', timeout=2)
- except Exception:
-     sys.exit(1)
- " 2>/dev/null; then
-    log "Ollama not reachable at $tags_url -- skipping (set OPENCODE_OLLAMA_TAGS_URL to point elsewhere)"
+  # localhost is the WORKER when this stage runs in a cicd_runner worker,
+  # not the host -- which is why it skipped against a healthy Ollama while
+  # `ollama serve` was up and bound to 0.0.0.0. scripts/hostnet.py owns the
+  # candidate chain (loopback, the docker alias, the route-table gateway)
+  # so this stage and the session probe cannot drift apart about where the
+  # host is.
+  # THE PROJECT'S OWN VARIABLES FIRST. OPENCODE_OLLAMA_TAGS_URL is what
+  # docker-compose.yml, terraform/main.tf, entrypoint.sh and
+  # select-and-run-eval.sh all set; OLLAMA_BASE_URL is the native root the
+  # notebooks and run_eval_client.py read. Deriving one from the other is
+  # what harness_notebook.py already does, so this stage agrees with it
+  # rather than inventing a third convention.
+  local tags_override="${OPENCODE_OLLAMA_TAGS_URL:-}"
+  if [ -z "$tags_override" ] && [ -n "${OLLAMA_BASE_URL:-}" ]; then
+    tags_override="${OLLAMA_BASE_URL%/}/api/tags"
+  fi
+
+  # ONLY when neither is set does discovery apply. A cicd_runner worker
+  # gets no environment injected (run_in_directory takes no env) and has no
+  # host.docker.internal alias, since it joins the default bridge with no
+  # --add-host -- so scripts/hostnet.py falls through to the route table
+  # there. That is a last resort beneath the variables above, not a
+  # replacement for them.
+  local tags_url
+  if ! tags_url="$(python3 scripts/hostnet.py --reachable 11434 /api/tags "$tags_override")"; then
+    log "Ollama not reachable -- skipping (set OPENCODE_OLLAMA_TAGS_URL or OLLAMA_BASE_URL)"
+    log "tried: $(python3 scripts/hostnet.py --urls 11434 /api/tags "$tags_override" | tr '\n' ' ')"
     return 2
   fi
+  log "Ollama reachable at $tags_url"
 
   local scratch base_config output
   scratch="$(mktemp -d)"
@@ -447,12 +476,14 @@ stage_e2e() {
     log "discover_local_ollama_models.py exited non-zero against a reachable Ollama"
     rc=1
   else
+    # ONE LINE, and the path passed as argv rather than interpolated.
+    # The multi-line form this replaces had acquired a leading space on
+    # every line (the Filesystem connector re-indents python embedded in
+    # shell), so it died with IndentationError -- and the sibling probe
+    # above sent the identical error to /dev/null, which is why this
+    # stage skipped in every environment instead of ever running.
     local model_count
-    model_count="$(python3 -c "
- import json
- data = json.load(open('$output'))
- print(len(data.get('provider', {}).get('local/ollama', {}).get('models', {})))
- ")"
+    model_count="$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('provider',{}).get('local/ollama',{}).get('models',{})))" "$output")"
     if [ "$model_count" -gt 0 ]; then
       log "local model list populated: $model_count model(s) discovered"
     else
@@ -638,13 +669,23 @@ print_artifact_manifest() {
   log ""
   log "ARTIFACTS WRITTEN BY THIS RUN -- stdout above is a summary, these are the evidence:"
   if [ -f "$LOG_FILE" ]; then
-    size=$(wc -c <"$LOG_FILE" 2>/dev/null || echo '?')
-    log "  $LOG_FILE (${size} bytes) -- full stdout+stderr of every stage, including tracebacks and warnings not shown above"
+    size=$(wc -c <"$LOG_FILE" 2>/dev/null | tr -d ' \n' || true)
+    log "  $LOG_FILE (${size:-?} bytes) -- full stdout+stderr of every stage, including tracebacks and warnings not shown above"
   fi
   for f in $ARTIFACTS_WRITTEN; do
-    if [ -e "$f" ]; then
-      size=$(wc -c <"$f" 2>/dev/null || echo '?')
-      log "  $f (${size} bytes)"
+    if [ -d "$f" ]; then
+      # A DIRECTORY IS NOT A FILE. `wc -c <dir` fails, and the failure
+      # printed as a literal newline inside the size, producing
+      # "results/e2e-session (0\n? bytes)" -- a manifest line that a
+      # reader cannot act on and a script cannot parse. Report what a
+      # directory artifact actually is: how many files and how big.
+      local count total
+      count=$(find "$f" -type f 2>/dev/null | wc -l | tr -d ' ')
+      total=$(du -sk "$f" 2>/dev/null | cut -f1)
+      log "  $f/ (${count:-?} file(s), ${total:-?} KiB)"
+    elif [ -e "$f" ]; then
+      size=$(wc -c <"$f" 2>/dev/null | tr -d ' \n' || true)
+      log "  $f (${size:-?} bytes)"
     else
       log "  $f (MISSING -- a stage reported writing this and it is not there)"
     fi
